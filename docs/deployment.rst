@@ -89,7 +89,7 @@ Once connected to the instance, run the following commands::
     # Now we have to manually install the docker compose plugin until this issue gets resolved https://github.com/amazonlinux/amazon-linux-2023/issues/186
     $ DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}  # Set location to install plugin 
     $ mkdir -p $DOCKER_CONFIG/cli-plugins  # Create the directory to install the plugin
-    $ curl -SL https://github.com/docker/compose/releases/download/v2.19.1/docker-compose-linux-x86_64 -o $DOCKER_CONFIG/cli-plugins/docker-compose  # Download plugin
+    $ curl -SL https://github.com/docker/compose/releases/download/v2.22.0/docker-compose-linux-x86_64 -o $DOCKER_CONFIG/cli-plugins/docker-compose  # Download plugin
     $ chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose  # Set executable permissions to the plugin 
     $ docker info  # Test if everything works
     $ docker compose version  # Test if plugin was installed correctly
