@@ -9,7 +9,7 @@ import os
 import json
 from collections import Counter
 
-from fastapi import FastAPI, APIRouter, Body, Depends, HTTPException
+from fastapi import FastAPI, APIRouter, Body, Depends, HTTPException, Request
 from fastapi import status as http_status
 from fastapi.middleware.gzip import GZipMiddleware
 from gufe import AlchemicalNetwork, ChemicalSystem, Transformation
@@ -108,15 +108,21 @@ def check_existence(
 
 
 @router.post("/networks", response_model=ScopedKey)
-def create_network(
+async def create_network(
     *,
-    network: List = Body(...),
-    scope: Scope,
+    request: Request,
     n4js: Neo4jStore = Depends(get_n4js_depends),
     token: TokenData = Depends(get_token_data_depends),
 ):
+    # we handle the request directly so we can decode with custom JSON decoder
+    # this is important for properly handling GUFE objects
+    body = await request.body()
+    body_ = json.loads(body.decode("utf-8"), cls=JSON_HANDLER.decoder)
+
+    scope = Scope.parse_obj(body_["scope"])
     validate_scopes(scope, token)
 
+    network = body_["network"]
     an = KeyedChain(network).to_gufe()
 
     try:

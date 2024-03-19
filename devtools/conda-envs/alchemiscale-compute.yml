@@ -2,14 +2,17 @@ name: alchemiscale-compute
 channels:
   - conda-forge
   - openeye
+  - conda-forge/label/openfe_rc
+  - conda-forge/label/gufe_rc
+
 dependencies:
   - pip
   - python =3.10
   - cudatoolkit <=11.7  # many actual compute resources are not yet compatible with cudatoolkit >=11.8
 
   # alchemiscale dependencies
-  - gufe=0.9.5
-  - openfe=0.14.0
+  - gufe=1.0.0rc0
+  - openfe=1.0.0rc0
   - openmmforcefields>=0.12.0
   - requests
   - click
