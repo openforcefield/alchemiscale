@@ -84,6 +84,9 @@ def n4js_preloaded(
         n4js.create_taskhub(sk1)
         n4js.create_taskhub(sk2)
 
+        # set network states
+        n4js.set_network_state([sk1, sk2], ["active", "inactive"])
+
     # Create user identities
     for user in [
         scopeless_credentialed_user,

@@ -190,6 +190,67 @@ class TaskHub(GufeTokenizable):
         return super()._defaults()
 
 
+class Mark(GufeTokenizable):
+
+    def __init__(self, target: str):
+        self.target = target
+
+    def _to_dict(self):
+        raise NotImplementedError
+
+    def _gufe_tokenize(self):
+        hash_string = str(self.target)
+        return hashlib.md5(hash_string.encode(), usedforsecurity=False).hexdigest()
+
+    @classmethod
+    def _from_dict(cls, d):
+        return cls(**d)
+
+    @classmethod
+    def _defaults(cls):
+        return super()._defaults()
+
+
+class NetworkStateEnum(Enum):
+    active = "active"
+    inactive = "inactive"
+    invalid = "invalid"
+    deleted = "deleted"
+
+
+class NetworkMark(Mark):
+    """
+
+    Attributes
+    ----------
+    network : str
+    state : str
+    """
+
+    network: str
+    state: str
+
+    def __init__(self, network: str, state: str = "active"):
+        self.state = state
+        super().__init__(network)
+
+    @property
+    def state(self):
+        return self._state
+
+    @state.setter
+    def state(self, state_value):
+        try:
+            self._state = NetworkStateEnum(state_value).value
+        except ValueError:
+            valid_states_string = ", ".join(sorted([i.value for i in NetworkStateEnum]))
+            msg = f"`state` = {state_value} is must be one of the following: {valid_states_string}"
+            raise ValueError(msg)
+
+    def _to_dict(self):
+        return {"network": self.target, "state": self._state}
+
+
 class TaskArchive(GufeTokenizable):
     ...
 

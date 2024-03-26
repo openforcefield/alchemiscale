@@ -9,7 +9,7 @@ from gufe.tests.test_protocol import BrokenProtocol
 import networkx as nx
 
 from alchemiscale.models import ScopedKey, Scope
-from alchemiscale.storage.models import TaskStatusEnum
+from alchemiscale.storage.models import TaskStatusEnum, NetworkStateEnum
 from alchemiscale.storage.cypher import cypher_list_from_scoped_keys
 from alchemiscale.interface import client
 from alchemiscale.utils import RegistryBackup
@@ -91,6 +91,187 @@ class TestClient:
         # common with an existing network
         # user_client.create_network(
 
+    @pytest.mark.parametrize(("state",), [[state.value] for state in NetworkStateEnum])
+    def test_set_network_state(
+        self,
+        state,
+        scope_test,
+        n4js_preloaded,
+        network_tyk2,
+        user_client: client.AlchemiscaleClient,
+    ):
+        an = network_tyk2
+
+        network_sk = user_client.create_network(
+            an.copy_with_replacements(
+                name=an.name + f"_test_set_network_state_{state}"
+            ),
+            scope_test,
+        )
+
+        q = """
+            MATCH (:AlchemicalNetwork {`_scoped_key`: $network})<-[:MARKS]-(nm:NetworkMark)
+            RETURN nm.state as state
+        """
+
+        results = n4js_preloaded.execute_query(q, {"network": str(network_sk)})
+
+        assert len(results.records) == 1
+        assert results.records[0]["state"] == "active"
+
+        updated_sk = user_client.set_network_state(network_sk, state)
+
+        assert updated_sk is not None
+
+        results = n4js_preloaded.execute_query(q, {"network": str(network_sk)})
+
+        assert len(results.records) == 1
+        assert results.records[0]["state"] == state
+
+    def test_set_network_state_no_network(
+        self,
+        scope_test,
+        n4js_preloaded,
+        user_client: client.AlchemiscaleClient,
+    ):
+
+        fake_scoped_key = ScopedKey.from_str(
+            "AlchemicalNetwork-FakeKey-test_org-test_campaign-test_project"
+        )
+        result = user_client.set_network_state(fake_scoped_key, "active")
+        assert result is None
+
+    def test_set_network_state_invalid_state(
+        self,
+        scope_test,
+        n4js_preloaded,
+        network_tyk2,
+        user_client: client.AlchemiscaleClient,
+    ):
+        invalid_state = "notastate"
+
+        an = network_tyk2
+
+        network_sk = user_client.create_network(an, scope_test)
+        with pytest.raises(
+            AlchemiscaleClientError,
+            match="Status Code 400 : Bad Request : 'notastate' is not a valid state. Valid values include: \['",
+        ):
+            user_client.set_network_state(network_sk, invalid_state)
+
+    def test_set_networks_state(
+        self,
+        scope_test,
+        n4js_preloaded,
+        network_tyk2,
+        user_client: client.AlchemiscaleClient,
+    ):
+        an = network_tyk2
+
+        network_sks = []
+        for i in range(3):
+            network = an.copy_with_replacements(
+                name=an.name + f"_test_set_networks_state_{i}"
+            )
+            network_sks.append(user_client.create_network(network, scope_test))
+
+        network_str_sks = list(map(str, network_sks))
+
+        q = """
+            UNWIND $networks as network
+            MATCH (:AlchemicalNetwork {`_scoped_key`: network})<-[:MARKS]-(nm:NetworkMark)
+            RETURN nm.state as state
+        """
+
+        results = n4js_preloaded.execute_query(q, {"networks": network_str_sks})
+
+        assert len(results.records) == 3
+        assert results.records[0]["state"] == "active"
+
+        for record in results.records:
+            assert record["state"] == "active"
+
+        updated_sks = user_client.set_networks_state(
+            network_sks, ["active", "inactive", "deleted"]
+        )
+        assert all([updated_sk is not None for updated_sk in updated_sks])
+
+        results = n4js_preloaded.execute_query(q, {"networks": network_str_sks})
+
+        assert len(results.records) == 3
+
+        assert results.records[0]["state"] == "active"
+        assert results.records[1]["state"] == "inactive"
+        assert results.records[2]["state"] == "deleted"
+
+    def test_get_network_state(
+        self,
+        scope_test,
+        n4js_preloaded,
+        network_tyk2,
+        user_client: client.AlchemiscaleClient,
+    ):
+        an = network_tyk2
+
+        network_sk = user_client.create_network(
+            an.copy_with_replacements(name=an.name + "test_get_network_state"),
+            scope_test,
+        )
+
+        result = user_client.get_network_state(network_sk)
+
+        assert result == "active"
+
+        n4js_preloaded.set_network_state([network_sk], ["inactive"])
+
+        result = user_client.get_network_state(network_sk)
+
+        assert result == "inactive"
+
+    def test_get_networks_state(
+        self,
+        scope_test,
+        n4js_preloaded,
+        network_tyk2,
+        user_client: client.AlchemiscaleClient,
+    ):
+        an = network_tyk2
+
+        network_sks = []
+        for i in range(3):
+            network = an.copy_with_replacements(
+                name=an.name + f"test_get_networks_state_{i}"
+            )
+            network_sks.append(user_client.create_network(network, scope_test))
+
+        results = user_client.get_networks_state(network_sks)
+
+        assert results == ["active", "active", "active"]
+
+        new_states = ["inactive", "deleted", "active"]
+        n4js_preloaded.set_network_state(
+            network_sks,
+            new_states,
+        )
+
+        results = user_client.get_networks_state(network_sks)
+
+        assert results == new_states
+
+    def test_get_network_state_no_network(
+        self,
+        n4js_preloaded,
+        network_tyk2,
+        user_client: client.AlchemiscaleClient,
+    ):
+        fake_scoped_key = ScopedKey.from_str(
+            "AlchemicalNetwork-FakeKey-test_org-test_campaign-test_project"
+        )
+
+        result = user_client.get_network_state(fake_scoped_key)
+
+        assert result is None
+
     def test_query_networks(
         self,
         scope_test,
@@ -98,13 +279,33 @@ class TestClient:
         network_tyk2,
         user_client: client.AlchemiscaleClient,
     ):
-        network_sks = user_client.query_networks()
+        network_sks = user_client.query_networks(state="all")
 
         assert len(network_sks) == 6
         assert scope_test in [n_sk.scope for n_sk in network_sks]
 
-        assert len(user_client.query_networks(scope=scope_test)) == 2
-        assert len(user_client.query_networks(name=network_tyk2.name)) == 3
+        network_sks = user_client.query_networks(state="active")
+
+        assert len(network_sks) == 3
+        assert scope_test in [n_sk.scope for n_sk in network_sks]
+
+        network_sks = user_client.query_networks(state="inactive")
+
+        assert len(network_sks) == 3
+        assert scope_test in [n_sk.scope for n_sk in network_sks]
+
+        assert (
+            len(user_client.query_networks(scope=scope_test, state="active|inactive"))
+            == 2
+        )
+        assert (
+            len(
+                user_client.query_networks(
+                    name=network_tyk2.name, state="active|inactive"
+                )
+            )
+            == 3
+        )
 
     def test_query_transformations(
         self,

@@ -22,6 +22,8 @@ from neo4j import Transaction, GraphDatabase, Driver
 from .models import (
     ComputeServiceID,
     ComputeServiceRegistration,
+    NetworkMark,
+    NetworkStateEnum,
     Task,
     TaskHub,
     TaskStatusEnum,
@@ -661,23 +663,177 @@ class Neo4jStore(AlchemiscaleStateStore):
         """
         return network
 
+    def get_network_state(self, networks: List[ScopedKey]) -> List[Optional[str]]:
+        """Get the states of a group of networks.
+
+        Parameters
+        ----------
+        networks
+            The list networks to get the states of.
+
+        Returns
+        -------
+        List[Optional[str]]
+            A list containing the states of the provided networks, in the same
+            order as they were provided. If a network was not found, a None
+            is returned.
+        """
+
+        q = f"""
+            UNWIND {cypher_list_from_scoped_keys(networks)} AS network
+            MATCH (an:AlchemicalNetwork {{`_scoped_key`: network}})<-[:MARKS]-(nm:NetworkMark)
+            RETURN an._scoped_key as sk, nm.state AS state
+        """
+
+        results = self.execute_query(q)
+
+        state_results = {}
+        for record in results.records:
+            sk = record["sk"]
+            state = record["state"]
+
+            state_results[sk] = (
+                NetworkStateEnum.active.value if state is None else state
+            )
+
+        return [state_results.get(str(network), None) for network in networks]
+
+    def set_network_state(
+        self, networks: List[ScopedKey], states: List[str]
+    ) -> List[Optional[ScopedKey]]:
+        """Set the state of a group of AlchemicalNetworks.
+
+        Parameters
+        ----------
+        networks
+            A list networks to set the states for.
+        states
+            A list of states to set the networks to.
+
+        Returns
+        -------
+        List[Optional[ScopedKey]]
+            The list of ScopedKeys for networks that were updated. If the
+            network could not be found in the database, a None is returned at
+            the corresponding index.
+        """
+
+        if len(networks) != len(states):
+            msg = "networks and states must have the same length"
+            raise ValueError(msg)
+
+        for network, state in zip(networks, states):
+            if network.qualname != "AlchemicalNetwork":
+                raise ValueError(
+                    "`network` ScopedKey does not correspond to an `AlchemicalNetwork`"
+                )
+            try:
+                NetworkStateEnum(state)
+            except ValueError:
+                valid_states = [state.value for state in NetworkStateEnum]
+                msg = f"'{state}' is not a valid state. Valid values include: {valid_states}"
+                raise ValueError(msg)
+
+        q = f"""
+            UNWIND {cypher_list_from_scoped_keys(networks)} as network
+            OPTIONAL MATCH (an:AlchemicalNetwork {{`_scoped_key`: network}})
+            RETURN network, an
+        """
+
+        results = self.execute_query(q)
+        network_nodes_dict = {}
+        for record in results.records:
+            network, an = record["network"], record["an"]
+            if an is None:
+                continue
+            network_nodes_dict[network] = record_data_to_node(an)
+
+        network_nodes = [
+            network_nodes_dict.get(str(network), None) for network in networks
+        ]
+
+        subgraph = Subgraph()
+        network_sks = []
+
+        for network_node, state in zip(network_nodes, states):
+
+            if network_node is None:
+                network_sks.append(None)
+                continue
+
+            network_sk = ScopedKey.from_str(network_node["_scoped_key"])
+            network_sks.append(network_sk)
+
+            network_state = NetworkMark(network=str(network_sk), state=state)
+
+            scope = network_sk.scope
+            _, network_state_node, scoped_key = self._gufe_to_subgraph(
+                network_state.to_shallow_dict(),
+                labels=["GufeTokenizable", network_state.__class__.__name__],
+                gufe_key=network_state.key,
+                scope=scope,
+            )
+
+            subgraph |= Relationship.type("MARKS")(
+                network_state_node,
+                network_node,
+                _org=scope.org,
+                _campaign=scope.campaign,
+                _project=scope.project,
+            )
+
+        with self.transaction(ignore_exceptions=True) as tx:
+            if subgraph:
+                merge_subgraph(tx, subgraph, "GufeTokenizable", "_scoped_key")
+
+        return network_sks
+
     def query_networks(
         self,
         *,
         name=None,
         key=None,
         scope: Optional[Scope] = Scope(),
-        return_gufe: bool = False,
+        network_state: Optional[str] = None,
     ):
         """Query for `AlchemicalNetwork`\s matching given attributes."""
-        additional = {"name": name}
-        return self._query(
-            qualname="AlchemicalNetwork",
-            additional=additional,
-            key=key,
-            scope=scope,
-            return_gufe=return_gufe,
+
+        query_params = dict(
+            name_pattern=name,
+            org_pattern=scope.org,
+            campaign_pattern=scope.campaign,
+            project_pattern=scope.project,
+            state_pattern=network_state,
+            gufe_key_pattern=None if key is None else str(key),
         )
+
+        for k, v in query_params.items():
+            if v is None:
+                query_params[k] = ".*"
+
+        q = """
+            MATCH (an:AlchemicalNetwork)<-[:MARKS]-(nm:NetworkMark)
+            WHERE
+                    an.name =~ $name_pattern
+                AND an.`_gufe_key` =~ $gufe_key_pattern
+                AND an.`_org` =~ $org_pattern
+                AND an.`_campaign` =~ $campaign_pattern
+                AND an.`_project` =~ $project_pattern
+                AND nm.state =~ $state_pattern
+            RETURN an._scoped_key as sk
+        """
+
+        results = self.execute_query(
+            q,
+            query_params,
+        )
+
+        network_sks = []
+        for record in results.records:
+            sk = record["sk"]
+            network_sks.append(ScopedKey.from_str(sk))
+
+        return network_sks
 
     def query_transformations(self, *, name=None, key=None, scope: Scope = Scope()):
         """Query for `Transformation`\s matching given attributes."""

@@ -16,6 +16,8 @@ from alchemiscale.storage.models import (
     TaskHub,
     ProtocolDAGResultRef,
     TaskStatusEnum,
+    NetworkMark,
+    NetworkStateEnum,
     ComputeServiceID,
     ComputeServiceRegistration,
 )
@@ -102,6 +104,76 @@ class TestNeo4jStore(TestStateStore):
 
     def test_delete_network(self): ...
 
+    def test_set_network_state(self, n4js, network_tyk2, scope_test):
+        valid_states = [state.value for state in NetworkStateEnum]
+        network_sks = []
+        for i, state in enumerate(valid_states):
+            an = network_tyk2.copy_with_replacements(
+                name=network_tyk2.name + f"_test_set_network_state_{i}"
+            )
+            sk = n4js.create_network(an, scope_test)
+            n4js.create_taskhub(sk)
+            network_sks.append(sk)
+
+        results = n4js.set_network_state(network_sks, valid_states)
+        assert results == network_sks
+
+        q = f"""
+            UNWIND {cypher_list_from_scoped_keys(network_sks)} as network
+            MATCH (an:AlchemicalNetwork {{`_scoped_key`: network}})<-[:MARKS]-(nm:NetworkMark {{network: network}})
+            RETURN nm
+        """
+        results = n4js.execute_query(q)
+
+        network_results = {}
+        for record in results.records:
+            nm = record["nm"]
+            network = nm["network"]
+            state = nm["state"]
+            network_results[ScopedKey.from_str(network)] = state
+
+            try:
+                NetworkStateEnum(state)
+            except ValueError:
+                raise ValueError(f"database contains an invalid state: {state}")
+
+        for network_sk, state in zip(network_sks, valid_states):
+            assert network_results[network_sk] == state
+
+        network_sk_no_exists = ScopedKey.from_str(str(network_sks[0]) + "_no_exists")
+        results = n4js.set_network_state(
+            network_sks + [network_sk_no_exists],
+            [NetworkStateEnum.active.value] * (len(NetworkStateEnum) + 1),
+        )
+
+        assert results == network_sks + [None]
+
+    def test_get_network_state(self, n4js, network_tyk2, scope_test):
+        valid_states = [state.value for state in NetworkStateEnum]
+        network_sks = []
+        for i, state in enumerate(valid_states):
+            an = network_tyk2.copy_with_replacements(
+                name=network_tyk2.name + f"_test_get_network_state_{i}"
+            )
+            sk = n4js.create_network(an, scope_test)
+            n4js.create_taskhub(sk)
+            network_sks.append(sk)
+
+        n4js.set_network_state(network_sks, ["active"] * len(network_sks))
+
+        results = n4js.get_network_state(network_sks)
+        assert results == [NetworkStateEnum.active.value] * len(network_sks)
+
+        n4js.set_network_state(network_sks, valid_states)
+
+        results = n4js.get_network_state(network_sks)
+        assert results == valid_states
+
+        network_sk_no_exists = ScopedKey.from_str(str(network_sks[0]) + "_no_exists")
+
+        results = n4js.get_network_state([network_sk_no_exists] + network_sks)
+        assert results == [None] + valid_states
+
     def test_get_network(self, n4js, network_tyk2, scope_test):
         an = network_tyk2
         sk: ScopedKey = n4js.create_network(an, scope_test)
@@ -124,6 +196,8 @@ class TestNeo4jStore(TestStateStore):
         sk: ScopedKey = n4js.create_network(an, scope_test)
         sk2: ScopedKey = n4js.create_network(an2, scope_test)
 
+        n4js.set_network_state([sk, sk2], ["active", "inactive"])
+
         an_sks: List[ScopedKey] = n4js.query_networks()
 
         assert sk in an_sks
@@ -140,6 +214,19 @@ class TestNeo4jStore(TestStateStore):
         # test name query
         an_sks = n4js.query_networks(name="tyk2_relative_benchmark")
         assert len(an_sks) == 1
+
+        # test state query
+        an_sks = n4js.query_networks(network_state=NetworkStateEnum.active.value)
+        assert len(an_sks) == 1
+
+        an_sks = n4js.query_networks(network_state=NetworkStateEnum.inactive.value)
+        assert len(an_sks) == 1
+
+        network_state = (
+            f"{NetworkStateEnum.active.value}|{NetworkStateEnum.inactive.value}"
+        )
+        an_sks = n4js.query_networks(network_state=network_state)
+        assert len(an_sks) == 2
 
     def test_query_transformations(self, n4js, network_tyk2, multiple_scopes):
         an = network_tyk2
@@ -597,7 +684,8 @@ class TestNeo4jStore(TestStateStore):
 
     def test_get_network_tasks(self, n4js, network_tyk2, scope_test):
         an = network_tyk2
-        n4js.create_network(an, scope_test)
+        sk = n4js.create_network(an, scope_test)
+        n4js.set_network_state([sk], ["active"])
 
         an_sk = n4js.query_networks(scope=scope_test)[0]
         tf_sks = n4js.get_network_transformations(an_sk)
@@ -623,8 +711,12 @@ class TestNeo4jStore(TestStateStore):
 
     def test_get_task_networks(self, n4js, network_tyk2, scope_test):
         an = network_tyk2
-        n4js.create_network(an, scope_test)
-        n4js.create_network(AlchemicalNetwork(edges=list(an.edges)[:-2]), scope_test)
+        sk_1 = n4js.create_network(an, scope_test)
+        sk_2 = n4js.create_network(
+            AlchemicalNetwork(edges=list(an.edges)[:-2]), scope_test
+        )
+
+        n4js.set_network_state([sk_1, sk_2], ["active", "active"])
 
         an_sk = n4js.query_networks(scope=scope_test)[0]
         tf_sks = n4js.get_network_transformations(an_sk)

@@ -26,7 +26,12 @@ from ..base.client import (
     use_session,
 )
 from ..models import Scope, ScopedKey
-from ..storage.models import Task, ProtocolDAGResultRef, TaskStatusEnum
+from ..storage.models import (
+    Task,
+    ProtocolDAGResultRef,
+    TaskStatusEnum,
+    NetworkStateEnum,
+)
 from ..strategies import Strategy
 from ..security.models import CredentialedUserIdentity
 from ..validators import validate_network_nonself
@@ -159,9 +164,91 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
 
         return ScopedKey.from_dict(scoped_key)
 
+    def set_network_state(self, network: ScopedKey, state: str) -> Optional[ScopedKey]:
+        """Set the state of an AlchemicalNetwork.
+
+        Parameters
+        ----------
+        network
+            The network whose state will be updated.
+        state
+            The state to set the network to. Valid options include "active",
+            "inactive", "invalid", and "deleted".
+
+        Returns
+        -------
+        Optional[ScopedKey]
+            The ScopedKey of the updated network. If the network was not found, a None
+            is returned.
+        """
+        return self.set_networks_state([network], [state])[0]
+
+    def set_networks_state(
+        self, networks: List[ScopedKey], states: List[str]
+    ) -> List[Optional[ScopedKey]]:
+        """Set the state of a group of AlchemicalNetworks.
+
+        Parameters
+        ----------
+        networks
+            The networks whose states will be updated.
+        states
+            The states to set the networks to. Values must be in a list of
+            the same length as the networks parameter. Valid options include
+            "active", "inactive", "invalid", and "deleted".
+
+        Returns
+        -------
+        Optional[ScopedKey]
+            The ScopedKeys of the updated networks. If a network was not found, a None
+            is returned at the corresponding index.
+        """
+        data = dict(networks=list(map(str, networks)), states=states)
+        networks_updated = self._post_resource("/bulk/networks/state/set", data=data)
+        return [
+            ScopedKey.from_str(network_sk) if network_sk is not None else None
+            for network_sk in networks_updated
+        ]
+
+    def get_network_state(self, network: ScopedKey) -> Optional[str]:
+        """Get the state of a network.
+
+        Parameters
+        ----------
+        network
+            The network's ScopedKey.
+
+        Returns
+        -------
+        Optional[str]
+            The state of the network. If the network was not found in the
+            database, a None is returned instead.
+        """
+        return self.get_networks_state([network])[0]
+
+    def get_networks_state(self, networks: List[ScopedKey]) -> List[Optional[str]]:
+        """Get the states for a group of networks.
+
+        Parameters
+        ----------
+        networks
+            A list of ScopedKeys for the networks.
+
+        Returns
+        -------
+        List[Optional[str]]
+            A list of network states, in the same order as the specified
+            networks. If a network was not found in the database, the
+            corresponding entry in this list is None.
+        """
+        data = dict(networks=list(map(str, networks)))
+        states = self._post_resource("/bulk/networks/state/get", data=data)
+        return [None if state is None else state for state in states]
+
     def query_networks(
         self,
         name: Optional[str] = None,
+        state: Optional[str] = NetworkStateEnum.active.value,
         scope: Optional[Scope] = None,
     ) -> List[ScopedKey]:
         """Query for AlchemicalNetworks, optionally by name or Scope.
@@ -170,11 +257,30 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
         all AlchemicalNetworks that are within the Scopes this user has access
         to.
 
+        Parameters
+        ----------
+        name : optional
+            Regex expression for the network names. Defaults to a wildcard.
+        state : optional
+            Regex expression for the network states. Nonexistent state values
+            entered will not raise any warnings. Use "all" to get networks
+            regardless of state. Defaults to the "active" state.
+        scope : optional
+            A specific scope to filter with.
+
+        Returns
+        -------
+        List[ScopedKey]
+            A list of ScopedKeys for the networks matching the query
+            parameters.
         """
         if scope is None:
             scope = Scope()
 
-        params = dict(name=name, **scope.dict())
+        if state == "all":
+            state = "|".join([state.value for state in NetworkStateEnum])
+
+        params = dict(name=name, **scope.dict(), network_state=state)
 
         return self._query_resource("/networks", params=params)
 
