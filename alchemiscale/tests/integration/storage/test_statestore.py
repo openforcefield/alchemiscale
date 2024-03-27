@@ -1260,6 +1260,57 @@ class TestNeo4jStore(TestStateStore):
         claimed6 = n4js.claim_taskhub_tasks(taskhub_sk, csid, count=2)
         assert claimed6 == [None] * 2
 
+    def test_claim_taskhub_tasks_deregister(
+        self, n4js: Neo4jStore, network_tyk2, scope_test
+    ):
+        """Test that deregistration clears active claims on Tasks."""
+        an = network_tyk2
+        network_sk = n4js.create_network(an, scope_test)
+        taskhub_sk: ScopedKey = n4js.create_taskhub(network_sk)
+
+        transformation = list(an.edges)[0]
+        transformation_sk = n4js.get_scoped_key(transformation, scope_test)
+
+        # create 10 tasks
+        N = 10
+        task_sks = n4js.create_tasks([transformation_sk] * N)
+
+        # action the tasks
+        n4js.action_tasks(task_sks, taskhub_sk)
+
+        # try to claim multiple tasks
+        csid = ComputeServiceID("task handler")
+        n4js.register_computeservice(ComputeServiceRegistration.from_now(csid))
+        claimed4 = n4js.claim_taskhub_tasks(taskhub_sk, csid, count=4)
+        assert len(claimed4) == 4
+
+        res = n4js.execute_query(
+            f"""
+        match (cs:ComputeServiceRegistration {{identifier: '{csid}'}})-[:CLAIMS]->(t:Task)
+        with t.status as status
+        return status
+        """
+        )
+
+        # check that all tasks in a running state
+        statuses = [rec["status"] for rec in res.records]
+        assert set(statuses) == {"running"}
+
+        # deregister service
+        compute_service_id_ = n4js.deregister_computeservice(csid)
+
+        # check that all tasks are in a waiting state after deregistering
+        res = n4js.execute_query(
+            f"""
+        match (t:Task) where t.status = 'waiting'
+        with t._scoped_key as sk
+        return sk
+        """
+        )
+
+        task_scoped_keys = [rec["sk"] for rec in res.records]
+        assert len(set(task_scoped_keys)) == 10
+
     def test_action_claim_task_extends(
         self, n4js: Neo4jStore, network_tyk2, scope_test
     ):
