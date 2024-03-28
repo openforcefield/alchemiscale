@@ -5,7 +5,7 @@
 """
 
 import asyncio
-from typing import Union, List, Dict, Optional, Tuple, Any
+from typing import Union, List, Dict, Optional, Tuple, Any, Iterable
 import json
 from itertools import chain
 from collections import Counter
@@ -266,7 +266,7 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
             If the network was not found in the database, then None is returned in the
             corresponding index.
         """
-        return self._tokenizable_attribute_getter(
+        return self._batched_attribute_getter(
             networks, self._get_network_weight, batch_size
         )
 
@@ -297,18 +297,27 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
         return ScopedKey.from_str(network_sk) if network_sk else None
 
     async def _set_network_weight(
-        self, networks: List[ScopedKey], weight
+        self,
+        items: List[Tuple[ScopedKey, float]],
     ) -> List[Optional[ScopedKey]]:
-        data = dict(networks=[str(network) for network in networks], weight=weight)
+
+        networks = []
+        weights = []
+        for item in items:
+            networks.append(str(item[0]))
+            weights.append(item[1])
+
+        data = dict(networks=networks, weights=weights)
         return await self._post_resource_async("/bulk/networks/weight/set", data=data)
 
     def set_networks_weight(
         self,
         networks: List[ScopedKey],
-        weight: float,
+        weights: List[float],
         batch_size: int = 1000,
     ) -> List[Optional[ScopedKey]]:
-        """Set the weights of the TaskHubs associated with the given AlchemicalNetworks.
+        """Set the weights of the TaskHubs associated with the given
+        AlchemicalNetworks.
 
         Compute services perform a weighted selection of the AlchemicalNetworks
         visible to them before claiming Tasks actioned on those networks.
@@ -324,9 +333,10 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
         networks
             The ScopedKeys of the AlchemicalNetworks to set the weights for.
         weight
-            The weight to set for the networks. This must be between 0 and 1
-            (inclusive). Setting the value to 0 will effectively disable
-            compute on this network without cancelling its actioned Tasks.
+            The weights to set for the `networks`, in the same order. Each must
+            be between 0 and 1 (inclusive). Setting the value to 0 will
+            effectively disable compute on the networks without cancelling its
+            actioned Tasks. Should be a list of the same length as `networks`.
 
         Returns
         -------
@@ -336,11 +346,10 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
             the specified networks could not be found, a None is returned
             at its corresponding index.
         """
-        values = self._tokenizable_attribute_setter(
-            networks,
+        values = self._batched_attribute_setter(
+            [(network, weight) for network, weight in zip(networks, weights)],
             self._set_network_weight,
-            (weight,),
-            batch_size,
+            batch_size=batch_size,
         )
         return [ScopedKey.from_str(value) if value else None for value in values]
 
@@ -766,7 +775,7 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
         Parameters
         ----------
         network
-            ScopedKey for the Alchemicalnetwork to obtain status counts for.
+            ScopedKey for the AlchemicalNetwork to obtain status counts for.
         visualize
             If ``True``, print a table of status counts.
 
@@ -786,12 +795,12 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
         self,
         networks: List[ScopedKey],
     ) -> List[Dict[str, int]]:
-        """Get the status counts of tasks for a group of AlchemicalNetworks.
+        """Get the status counts of Tasks for a list of AlchemicalNetworks.
 
         Parameters
         ----------
         networks
-            List of AlchemsicalNetwork ScopedKeys
+            List of AlchemsicalNetwork ScopedKeys to obtain status counts for.
 
         Returns
         -------
@@ -800,7 +809,7 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
             containing the Task status counts for all Tasks in each network.
             The dictionary keys are the statuses and the values are the number
             of Tasks with that status. If either no tasks exist for the
-            transformations in a network, or the network does not exist in the
+            Transformations in a network, or the network does not exist in the
             database, a empty dictionary is returned at the corresponding index.
         """
         data = {"networks": [str(network) for network in networks]}
@@ -869,7 +878,7 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
         networks: List[ScopedKey],
         task_weights: bool = False,
     ) -> List[Union[Dict[ScopedKey, float], List[ScopedKey]]]:
-        """Get all actioned Tasks for a group of AlchemicalNetwork ScopedKeys.
+        """Get all actioned Tasks for a list of AlchemicalNetwork ScopedKeys.
 
         Parameters
         ----------
@@ -883,7 +892,7 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
             If task_weights is True, a list of dictionaries is returned with
             the same length as the specified network list. The keys and values
             of the contained dictionaries are the ScopedKeys and weights of
-            the actioned Tasks.
+            the actioned Tasks, respectively.
 
             If task_weights is False, only a list of actioned Task ScopedKeys
             is returned for each network in the specified list.
@@ -1005,27 +1014,19 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
 
         return [ScopedKey.from_str(i) if i is not None else None for i in canceled_sks]
 
-    def _tokenizable_attribute_getter(
+    def _batched_attribute_getter(
         self,
-        tokenizables: List[ScopedKey],
+        batchables: List[Any],
         getter_function,
         batch_size,
     ) -> List[Any]:
-        tokenizables = [
-            (
-                ScopedKey.from_str(tokenizable)
-                if isinstance(tokenizable, str)
-                else tokenizable
-            )
-            for tokenizable in tokenizables
-        ]
 
         @use_session
         async def async_request(self):
             values = await asyncio.gather(
                 *[
-                    getter_function(tokenizable_batch)
-                    for tokenizable_batch in self._batched(tokenizables, batch_size)
+                    getter_function(batch)
+                    for batch in self._batched(batchables, batch_size)
                 ]
             )
 
@@ -1043,29 +1044,24 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
             nest_asyncio.apply()
             return asyncio.run(coro)
 
-    def _tokenizable_attribute_setter(
+    def _batched_attribute_setter(
         self,
-        tokenizables: List[ScopedKey],
+        batchables: List[Any],
         setter_function,
-        setter_args,
-        batch_size,
+        setter_args: Iterable[Any] = None,
+        batch_size: int = 1000,
         should_return=True,
     ) -> List[Optional[ScopedKey]]:
-        tokenizables = [
-            (
-                ScopedKey.from_str(tokenizable)
-                if isinstance(tokenizable, str)
-                else tokenizable
-            )
-            for tokenizable in tokenizables
-        ]
+
+        if setter_args is None:
+            setter_args = []
 
         @use_session
         async def async_request(self):
             scoped_keys = await asyncio.gather(
                 *[
-                    setter_function(tokenizable_batch, *setter_args)
-                    for tokenizable_batch in self._batched(tokenizables, batch_size)
+                    setter_function(batch, *setter_args)
+                    for batch in self._batched(batchables, batch_size)
                 ]
             )
 
@@ -1128,7 +1124,7 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
         """
         status = TaskStatusEnum(status)
 
-        return self._tokenizable_attribute_setter(
+        return self._batched_attribute_setter(
             tasks, self._set_task_status, (status,), batch_size
         )
 
@@ -1158,9 +1154,7 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
             given Task doesn't exist, ``None`` will be returned in its place.
 
         """
-        return self._tokenizable_attribute_getter(
-            tasks, self._get_task_status, batch_size
-        )
+        return self._batched_attribute_getter(tasks, self._get_task_status, batch_size)
 
     async def _set_task_priority(
         self, tasks: List[ScopedKey], priority: int
@@ -1200,7 +1194,7 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
             as given in `tasks`. If a given Task doesn't exist, ``None`` will
             be returned in its place.
         """
-        return self._tokenizable_attribute_setter(
+        return self._batched_attribute_setter(
             tasks, self._set_task_priority, (priority,), batch_size
         )
 
@@ -1234,7 +1228,7 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
             given Task doesn't exist, ``None`` will be returned in its place.
 
         """
-        return self._tokenizable_attribute_getter(
+        return self._batched_attribute_getter(
             tasks, self._get_task_priority, batch_size
         )
 

@@ -554,12 +554,14 @@ def get_networks_actioned_tasks(
 ) -> List[Union[Dict[str, float], List[str]]]:
 
     network_sks = [ScopedKey.from_str(network) for network in networks]
-    taskhub_sks = [n4js.get_taskhub(network_sk) for network_sk in network_sks]
 
+    for sk in network_sks:
+        validate_scopes(sk.scope, token)
+
+    taskhub_sks = [n4js.get_taskhub(network_sk) for network_sk in network_sks]
     grouped_task_sks = n4js.get_taskhub_actioned_tasks(taskhub_sks)
 
     return_data = []
-
     for group in grouped_task_sks:
         if task_weights:
             return_data.append(
@@ -665,7 +667,7 @@ def set_network_weight(
     validate_scopes(sk.scope, token)
 
     try:
-        network_sk = n4js.set_taskhub_weight([sk], weight)[0]
+        network_sk = n4js.set_taskhub_weight([sk], [weight])[0]
         return str(network_sk) if network_sk else None
     except ValueError as e:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -675,7 +677,7 @@ def set_network_weight(
 def set_networks_weight(
     *,
     networks: List[str] = Body(embed=True),
-    weight: float = Body(embed=True),
+    weights: List[float] = Body(embed=True),
     n4js: Neo4jStore = Depends(get_n4js_depends),
     token: TokenData = Depends(get_token_data_depends),
 ) -> None:
@@ -687,7 +689,7 @@ def set_networks_weight(
 
     try:
         network_sks = n4js.set_taskhub_weight(
-            [ScopedKey.from_str(network) for network in networks], weight
+            [ScopedKey.from_str(network) for network in networks], weights
         )
         return [str(network_sk) if network_sk else None for network_sk in network_sks]
     except Exception as e:

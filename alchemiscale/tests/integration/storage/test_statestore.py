@@ -880,7 +880,7 @@ class TestNeo4jStore(TestStateStore):
         assert n["weight"] == 0.5
 
         # change the weight
-        n4js.set_taskhub_weight([network_sk], 0.7)
+        n4js.set_taskhub_weight([network_sk], [0.7])
 
         q = f"""match (n:TaskHub)
                 return n
@@ -986,7 +986,7 @@ class TestNeo4jStore(TestStateStore):
         network_sk = n4js.create_network(network_tyk2, scope_test)
         n4js.create_taskhub(network_sk)
 
-        results = n4js.set_taskhub_weight([network_sk], 1.0)
+        results = n4js.set_taskhub_weight([network_sk], [1.0])
         weight = n4js.get_taskhub_weight([network_sk])[0]
 
         assert results == [network_sk]
@@ -1002,13 +1002,13 @@ class TestNeo4jStore(TestStateStore):
             network_sks.append(network_sk)
             n4js.create_taskhub(network_sk)
 
-        results = n4js.set_taskhub_weight(network_sks, 1.0)
+        results = n4js.set_taskhub_weight(network_sks, [1.0] * 3)
         weight = n4js.get_taskhub_weight(network_sks)
 
         assert results == network_sks
         assert weight == [1.0, 1.0, 1.0]
 
-        results = n4js.set_taskhub_weight([network_sks[0]], 0.5)
+        results = n4js.set_taskhub_weight([network_sks[0]], [0.5])
         weight = n4js.get_taskhub_weight(network_sks)
 
         assert results == [network_sks[0]]
@@ -1017,7 +1017,7 @@ class TestNeo4jStore(TestStateStore):
         wrong_scoped_key = ScopedKey.from_str(str(network_sks[1]) + "noexist")
 
         results = n4js.set_taskhub_weight(
-            [network_sks[0], wrong_scoped_key, network_sks[2]], 0.25
+            [network_sks[0], wrong_scoped_key, network_sks[2]], [0.25] * 3
         )
         weight = n4js.get_taskhub_weight(
             [network_sks[0], wrong_scoped_key, network_sks[2]]
@@ -1025,6 +1025,11 @@ class TestNeo4jStore(TestStateStore):
 
         assert results == [network_sks[0], None, network_sks[2]]
         assert weight == [0.25, None, 0.25]
+
+        results = n4js.set_taskhub_weight(network_sks, [0.5, 0.3, 0.7])
+        weight = n4js.get_taskhub_weight(network_sks)
+
+        assert weight == [0.5, 0.3, 0.7]
 
     def test_action_task(self, n4js: Neo4jStore, network_tyk2, scope_test):
         an = network_tyk2

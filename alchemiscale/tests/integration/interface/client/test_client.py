@@ -299,8 +299,8 @@ class TestClient:
         network_weight_0 = 0.25
         network_weight_1 = 0.75
 
-        n4js_preloaded.set_taskhub_weight([network_sks[0]], network_weight_0)
-        n4js_preloaded.set_taskhub_weight([network_sks[1]], network_weight_1)
+        n4js_preloaded.set_taskhub_weight([network_sks[0]], [network_weight_0])
+        n4js_preloaded.set_taskhub_weight([network_sks[1]], [network_weight_1])
 
         client_query_result = user_client.get_networks_weight(network_sks)
 
@@ -330,7 +330,7 @@ class TestClient:
         if shouldfail:
             with pytest.raises(
                 AlchemiscaleClientError,
-                match="Status Code 400 : Bad Request : weight must be",
+                match="Status Code 400 : Bad Request : all `weights` must be",
             ):
                 user_client.set_network_weight(an_sk, weight)
         else:
@@ -344,13 +344,13 @@ class TestClient:
             assert user_client.get_network_weight(an_sk) == weight
 
     @pytest.mark.parametrize(
-        "weight, shouldfail",
+        "weights, shouldfail",
         [
-            (0.0, False),
-            (0.5, False),
-            (1.0, False),
-            (-1.0, True),
-            (-1.5, True),
+            ((0.0, 1.0), False),
+            ((0.5, 0.5), False),
+            ((1.0, 1.0), False),
+            ((-1.0, 0.2), True),
+            ((-1.5, 0.5), True),
         ],
     )
     def test_set_networks_weight(
@@ -359,7 +359,7 @@ class TestClient:
         n4js_preloaded,
         network_tyk2,
         user_client: client.AlchemiscaleClient,
-        weight,
+        weights,
         shouldfail,
     ):
 
@@ -379,18 +379,18 @@ class TestClient:
         if shouldfail:
             with pytest.raises(
                 AlchemiscaleClientError,
-                match="Status Code 400 : Bad Request : weight must be",
+                match="Status Code 400 : Bad Request : all `weights` must be",
             ):
-                user_client.set_networks_weight(network_sks, weight)
+                user_client.set_networks_weight(network_sks, weights)
         else:
-            user_client.set_networks_weight(network_sks, weight)
-            assert n4js_preloaded.get_taskhub_weight(network_sks) == [weight, weight]
+            user_client.set_networks_weight(network_sks, weights)
+            assert n4js_preloaded.get_taskhub_weight(network_sks) == list(weights)
 
-            weight = abs(weight - 0.5)
-            results = user_client.set_networks_weight(network_sks, weight)
+            weights = [abs(weight - 0.5) for weight in weights]
+            results = user_client.set_networks_weight(network_sks, weights)
 
             assert results == network_sks
-            assert n4js_preloaded.get_taskhub_weight(network_sks) == [weight, weight]
+            assert n4js_preloaded.get_taskhub_weight(network_sks) == list(weights)
 
     def test_get_transformation(
         self,
