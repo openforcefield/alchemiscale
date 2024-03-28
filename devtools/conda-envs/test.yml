@@ -9,7 +9,8 @@ dependencies:
   - gufe>=0.9.5
   - openfe>=0.14.0
   - openmmforcefields>=0.12.0
-  - pydantic<2.0
+  - pydantic >1
+  - pydantic-settings
 
   ## state store
   - neo4j-python-driver
