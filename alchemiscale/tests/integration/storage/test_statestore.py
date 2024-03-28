@@ -880,7 +880,7 @@ class TestNeo4jStore(TestStateStore):
         assert n["weight"] == 0.5
 
         # change the weight
-        n4js.set_taskhub_weight(network_sk, 0.7)
+        n4js.set_taskhub_weight([network_sk], [0.7])
 
         q = f"""match (n:TaskHub)
                 return n
@@ -922,13 +922,13 @@ class TestNeo4jStore(TestStateStore):
         task_sks = n4js.create_tasks([transformation_sk] * 5)
 
         # do not action the tasks yet; should get back nothing
-        actioned_tasks = n4js.get_taskhub_actioned_tasks(taskhub_sk)
+        actioned_tasks = n4js.get_taskhub_actioned_tasks([taskhub_sk])[0]
         assert actioned_tasks == {}
 
         # action 3 of 5 tasks
         n4js.action_tasks(task_sks[:3], taskhub_sk)
 
-        actioned_tasks = n4js.get_taskhub_actioned_tasks(taskhub_sk)
+        actioned_tasks = n4js.get_taskhub_actioned_tasks([taskhub_sk])[0]
 
         assert len(actioned_tasks) == 3
         assert all([task_i in task_sks for task_i in actioned_tasks])
@@ -977,7 +977,7 @@ class TestNeo4jStore(TestStateStore):
         """
 
         weight = n4js.execute_query(q).records[0].data()["taskhub.weight"]
-        weight_ = n4js.get_taskhub_weight(network_sk)
+        weight_ = n4js.get_taskhub_weight([network_sk])[0]
 
         assert weight == 0.5
         assert weight_ == 0.5
@@ -986,10 +986,50 @@ class TestNeo4jStore(TestStateStore):
         network_sk = n4js.create_network(network_tyk2, scope_test)
         n4js.create_taskhub(network_sk)
 
-        n4js.set_taskhub_weight(network_sk, 1.0)
-        weight = n4js.get_taskhub_weight(network_sk)
+        results = n4js.set_taskhub_weight([network_sk], [1.0])
+        weight = n4js.get_taskhub_weight([network_sk])[0]
 
+        assert results == [network_sk]
         assert weight == 1.0
+
+        # create three new networks
+        network_sks = []
+        for i in range(3):
+            an = network_tyk2.copy_with_replacements(
+                name=network_tyk2.name + f"_test_set_taskhub_weight_{i}"
+            )
+            network_sk = n4js.create_network(an, scope_test)
+            network_sks.append(network_sk)
+            n4js.create_taskhub(network_sk)
+
+        results = n4js.set_taskhub_weight(network_sks, [1.0] * 3)
+        weight = n4js.get_taskhub_weight(network_sks)
+
+        assert results == network_sks
+        assert weight == [1.0, 1.0, 1.0]
+
+        results = n4js.set_taskhub_weight([network_sks[0]], [0.5])
+        weight = n4js.get_taskhub_weight(network_sks)
+
+        assert results == [network_sks[0]]
+        assert weight == [0.5, 1.0, 1.0]
+
+        wrong_scoped_key = ScopedKey.from_str(str(network_sks[1]) + "noexist")
+
+        results = n4js.set_taskhub_weight(
+            [network_sks[0], wrong_scoped_key, network_sks[2]], [0.25] * 3
+        )
+        weight = n4js.get_taskhub_weight(
+            [network_sks[0], wrong_scoped_key, network_sks[2]]
+        )
+
+        assert results == [network_sks[0], None, network_sks[2]]
+        assert weight == [0.25, None, 0.25]
+
+        results = n4js.set_taskhub_weight(network_sks, [0.5, 0.3, 0.7])
+        weight = n4js.get_taskhub_weight(network_sks)
+
+        assert weight == [0.5, 0.3, 0.7]
 
     def test_action_task(self, n4js: Neo4jStore, network_tyk2, scope_test):
         an = network_tyk2
@@ -1492,14 +1532,14 @@ class TestNeo4jStore(TestStateStore):
 
         task_sks = n4js.create_tasks(tf_sks)
 
-        status = n4js.get_network_status(an_sk)
+        status = n4js.get_network_status([an_sk])[0]
         assert len(status) == 1
         assert status["waiting"] == len(task_sks)
 
         # change some task statuses
         n4js.set_task_invalid(task_sks[:10])
 
-        status = n4js.get_network_status(an_sk)
+        status = n4js.get_network_status([an_sk])[0]
         assert len(status) == 2
         assert status["waiting"] == len(task_sks) - 10
         assert status["invalid"] == 10

@@ -16,6 +16,9 @@ def cypher_list_from_scoped_keys(scoped_keys: List[Optional[ScopedKey]]) -> str:
         Cypher list
     """
 
+    if not isinstance(scoped_keys, list):
+        raise ValueError("`scoped_keys` must be a list of ScopedKeys")
+
     data = []
     for scoped_key in scoped_keys:
         if scoped_key:

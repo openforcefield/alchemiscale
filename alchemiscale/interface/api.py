@@ -198,18 +198,6 @@ def query_chemicalsystems(
     return [str(sk) for sk in results]
 
 
-@router.get("/networks/{network_scoped_key}/weight")
-def get_network_weight(
-    network_scoped_key,
-    *,
-    n4js: Neo4jStore = Depends(get_n4js_depends),
-    token: TokenData = Depends(get_token_data_depends),
-) -> float:
-    sk = ScopedKey.from_str(network_scoped_key)
-    validate_scopes(sk.scope, token)
-    return n4js.get_taskhub_weight(sk)
-
-
 @router.get("/networks/{network_scoped_key}/transformations")
 def get_network_transformations(
     network_scoped_key,
@@ -499,8 +487,25 @@ def get_network_status(
     sk = ScopedKey.from_str(network_scoped_key)
     validate_scopes(sk.scope, token)
 
-    status_counts = n4js.get_network_status(network_scoped_key)
+    status_counts = n4js.get_network_status([network_scoped_key])[0]
 
+    return status_counts
+
+
+@router.post("/bulk/networks/status")
+def get_networks_status(
+    *,
+    networks: List[str] = Body(embed=True),
+    n4js: Neo4jStore = Depends(get_n4js_depends),
+    token: TokenData = Depends(get_token_data_depends),
+) -> List[Dict[str, int]]:
+
+    network_sks = [ScopedKey.from_str(sk) for sk in networks]
+
+    for sk in network_sks:
+        validate_scopes(sk.scope, token)
+
+    status_counts = n4js.get_network_status(network_sks)
     return status_counts
 
 
@@ -531,12 +536,41 @@ def get_network_actioned_tasks(
     validate_scopes(network_sk.scope, token)
 
     taskhub_sk = n4js.get_taskhub(network_sk)
-    task_sks = n4js.get_taskhub_actioned_tasks(taskhub_sk)
+    task_sks = n4js.get_taskhub_actioned_tasks([taskhub_sk])[0]
 
     if task_weights:
         return {str(task_sk): weight for task_sk, weight in task_sks.items()}
 
     return [str(task_sk) for task_sk in task_sks]
+
+
+@router.post("/bulk/networks/tasks/actioned")
+def get_networks_actioned_tasks(
+    *,
+    networks: List[str] = Body(embed=True),
+    task_weights: bool = Body(embed=True),
+    n4js: Neo4jStore = Depends(get_n4js_depends),
+    token: TokenData = Depends(get_token_data_depends),
+) -> List[Union[Dict[str, float], List[str]]]:
+
+    network_sks = [ScopedKey.from_str(network) for network in networks]
+
+    for sk in network_sks:
+        validate_scopes(sk.scope, token)
+
+    taskhub_sks = [n4js.get_taskhub(network_sk) for network_sk in network_sks]
+    grouped_task_sks = n4js.get_taskhub_actioned_tasks(taskhub_sks)
+
+    return_data = []
+    for group in grouped_task_sks:
+        if task_weights:
+            return_data.append(
+                {str(task_sk): weight for task_sk, weight in group.items()}
+            )
+        else:
+            return_data.append([str(task_sk) for task_sk in group])
+
+    return return_data
 
 
 @router.post("/tasks/{task_scoped_key}/networks/actioned")
@@ -593,6 +627,34 @@ def action_tasks(
     return [str(sk) if sk is not None else None for sk in actioned_sks]
 
 
+@router.get("/networks/{network_scoped_key}/weight")
+def get_network_weight(
+    network_scoped_key,
+    *,
+    n4js: Neo4jStore = Depends(get_n4js_depends),
+    token: TokenData = Depends(get_token_data_depends),
+) -> float:
+    sk = ScopedKey.from_str(network_scoped_key)
+    validate_scopes(sk.scope, token)
+    return n4js.get_taskhub_weight([sk])[0]
+
+
+@router.post("/bulk/networks/weight/get")
+def get_networks_weight(
+    *,
+    networks: List[str] = Body(embed=True),
+    n4js: Neo4jStore = Depends(get_n4js_depends),
+    token: TokenData = Depends(get_token_data_depends),
+) -> List[float]:
+
+    network_sks = [ScopedKey.from_str(network_str) for network_str in networks]
+
+    for network_sk in network_sks:
+        validate_scopes(network_sk.scope, token)
+
+    return n4js.get_taskhub_weight(network_sks)
+
+
 @router.post("/networks/{network_scoped_key}/weight")
 def set_network_weight(
     network_scoped_key,
@@ -605,8 +667,32 @@ def set_network_weight(
     validate_scopes(sk.scope, token)
 
     try:
-        n4js.set_taskhub_weight(sk, weight)
+        network_sk = n4js.set_taskhub_weight([sk], [weight])[0]
+        return str(network_sk) if network_sk else None
     except ValueError as e:
+        raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/bulk/networks/weight/set")
+def set_networks_weight(
+    *,
+    networks: List[str] = Body(embed=True),
+    weights: List[float] = Body(embed=True),
+    n4js: Neo4jStore = Depends(get_n4js_depends),
+    token: TokenData = Depends(get_token_data_depends),
+) -> None:
+
+    network_sks = [ScopedKey.from_str(network_str) for network_str in networks]
+
+    for network in network_sks:
+        validate_scopes(network.scope, token)
+
+    try:
+        network_sks = n4js.set_taskhub_weight(
+            [ScopedKey.from_str(network) for network in networks], weights
+        )
+        return [str(network_sk) if network_sk else None for network_sk in network_sks]
+    except Exception as e:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
