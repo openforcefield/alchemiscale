@@ -1,5 +1,6 @@
 import pytest
 from time import sleep
+import os
 from pathlib import Path
 from itertools import chain
 
@@ -19,6 +20,40 @@ from alchemiscale.interface.client import AlchemiscaleClientError
 
 
 class TestClient:
+    def test_cache_size_limit_negative(
+        self, user_client: client.AlchemiscaleBaseClient
+    ):
+        settings = user_client._settings()
+        settings["cache_size_limit"] = -1
+        with pytest.raises(
+            ValueError,
+            match="`cache_size_limit` must be greater than or equal to zero.",
+        ):
+            client.AlchemiscaleClient(**settings)
+
+    def test_cache_dir_not_path_str_none(self, user_client: client.AlchemiscaleClient):
+        settings = user_client._settings()
+        settings["cache_directory"] = 0
+        with pytest.raises(
+            TypeError,
+            match="`cache_directory` must be a `str`, `pathlib.Path`, or `None`.",
+        ):
+            client.AlchemiscaleClient(**settings)
+
+    # here we test the AlchemiscaleClient._determine_cache_dir
+    # so we don't create non-temporary files on the testing platform
+    def test_cache_dir_none(self):
+        # set custom XDG_CACHE_HOME
+        target_dir = Path().home() / ".other_cache"
+        os.environ["XDG_CACHE_HOME"] = str(target_dir)
+        cache_dir = client.AlchemiscaleClient._determine_cache_dir(None)
+        assert cache_dir == target_dir.absolute() / "alchemiscale"
+
+        # remove the env variable to get the default directory location
+        os.environ.pop("XDG_CACHE_HOME", None)
+        cache_dir = client.AlchemiscaleClient._determine_cache_dir(None)
+        assert cache_dir == Path().home() / ".cache" / "alchemiscale"
+
     def test_wrong_credential(
         self,
         scope_test,
@@ -481,6 +516,49 @@ class TestClient:
         assert an == network_tyk2
         assert an is network_tyk2
 
+    def test_cached_network(
+        self,
+        scope_test,
+        n4js_preloaded,
+        network_tyk2,
+        user_client: client.AlchemiscaleClient,
+    ):
+        # clear both the on-disk and in-memory cache
+        user_client._cache.clear()
+        user_client._cache.stats(reset=True)
+        user_client.get_network.cache_clear()
+
+        an_sk = user_client.get_scoped_key(network_tyk2, scope_test)
+
+        # reset stats of cache
+        assert user_client._cache.stats(enable=True, reset=True) == (0, 0)
+
+        # expect a miss and entry in the cache
+        user_client.get_network(an_sk)
+        assert user_client._cache.stats() == (0, 1) and len(user_client._cache) == 1
+
+        # expect the in-memory lru cache to get the last result pulled
+        user_client.get_network(an_sk)
+        assert user_client._cache.stats() == (0, 1) and len(user_client._cache) == 1
+        # clear in-memory cache
+        user_client.get_network.cache_clear()
+
+        # expect a hit
+        user_client.get_network(an_sk)
+        assert user_client._cache.stats() == (1, 1) and len(user_client._cache) == 1
+
+        user_client.get_network.cache_clear()
+
+        # manually invalidate the cached network so it won't deserialize
+        cached_bytes = user_client._cache.get(str(an_sk))
+        corrupted_bytes = cached_bytes.replace(b":", b";")
+        user_client._cache.set(str(an_sk), corrupted_bytes)
+        with pytest.warns(UserWarning, match=f"Error decoding cached {an_sk.qualname}"):
+            user_client.get_network(an_sk)
+
+        new_cached_bytes = user_client._cache.get(str(an_sk))
+        assert new_cached_bytes != corrupted_bytes
+
     def test_get_network_bad_network_key(
         self,
         scope_test: Scope,
@@ -636,6 +714,49 @@ class TestClient:
         assert tf == transformation
         assert tf is transformation
 
+    def test_cached_transformation(
+        self,
+        scope_test,
+        n4js_preloaded,
+        transformation,
+        user_client: client.AlchemiscaleClient,
+    ):
+        # clear both the on-disk and in-memory cache
+        user_client._cache.clear()
+        user_client._cache.stats(reset=True)
+        user_client.get_transformation.cache_clear()
+
+        tf_sk = user_client.get_scoped_key(transformation, scope_test)
+
+        # reset stats of cache
+        assert user_client._cache.stats(enable=True, reset=True) == (0, 0)
+
+        # expect a miss and entry in the cache
+        user_client.get_transformation(tf_sk)
+        assert user_client._cache.stats() == (0, 1) and len(user_client._cache) == 1
+
+        # expect the in-memory lru cache to get the last result pulled
+        user_client.get_transformation(tf_sk)
+        assert user_client._cache.stats() == (0, 1) and len(user_client._cache) == 1
+        # clear in-memory cache
+        user_client.get_transformation.cache_clear()
+
+        # expect a hit
+        user_client.get_transformation(tf_sk)
+        assert user_client._cache.stats() == (1, 1) and len(user_client._cache) == 1
+
+        user_client.get_transformation.cache_clear()
+
+        # manually invalidate the cached transformation so it won't deserialize
+        cached_bytes = user_client._cache.get(str(tf_sk))
+        corrupted_bytes = cached_bytes.replace(b":", b";")
+        user_client._cache.set(str(tf_sk), corrupted_bytes)
+        with pytest.warns(UserWarning, match=f"Error decoding cached {tf_sk.qualname}"):
+            user_client.get_transformation(tf_sk)
+
+        new_cached_bytes = user_client._cache.get(str(tf_sk))
+        assert new_cached_bytes != corrupted_bytes
+
     def test_get_transformation_bad_transformation_key(
         self, scope_test, n4js_preloaded, user_client
     ):
@@ -661,6 +782,49 @@ class TestClient:
 
         assert cs == chemicalsystem
         assert cs is chemicalsystem
+
+    def test_cached_chemicalsystem(
+        self,
+        scope_test,
+        n4js_preloaded,
+        chemicalsystem,
+        user_client: client.AlchemiscaleClient,
+    ):
+        # clear both the on-disk and in-memory cache
+        user_client._cache.clear()
+        user_client._cache.stats(reset=True)
+        user_client.get_chemicalsystem.cache_clear()
+
+        cs_sk = user_client.get_scoped_key(chemicalsystem, scope_test)
+
+        # reset stats of cache
+        assert user_client._cache.stats(enable=True, reset=True) == (0, 0)
+
+        # expect a miss and entry in the cache
+        user_client.get_chemicalsystem(cs_sk)
+        assert user_client._cache.stats() == (0, 1) and len(user_client._cache) == 1
+
+        # expect the in-memory lru cache to get the last result pulled
+        user_client.get_chemicalsystem(cs_sk)
+        assert user_client._cache.stats() == (0, 1) and len(user_client._cache) == 1
+        # clear in-memory cache
+        user_client.get_chemicalsystem.cache_clear()
+
+        # expect a hit
+        user_client.get_chemicalsystem(cs_sk)
+        assert user_client._cache.stats() == (1, 1) and len(user_client._cache) == 1
+
+        user_client.get_chemicalsystem.cache_clear()
+
+        # manually invalidate the cached ChemicalSystem so it won't deserialize
+        cached_bytes = user_client._cache.get(str(cs_sk))
+        corrupted_bytes = cached_bytes.replace(b":", b";")
+        user_client._cache.set(str(cs_sk), corrupted_bytes)
+        with pytest.warns(UserWarning, match=f"Error decoding cached {cs_sk.qualname}"):
+            user_client.get_chemicalsystem(cs_sk)
+
+        new_cached_bytes = user_client._cache.get(str(cs_sk))
+        assert new_cached_bytes != corrupted_bytes
 
     def test_get_chemicalsystem_bad_chemicalsystem_key(
         self, scope_test, n4js_preloaded, user_client
@@ -1031,7 +1195,7 @@ class TestClient:
         other_scope = Scope("other_org", "other_campaign", "other_project")
         n4js_preloaded.assemble_network(network_tyk2, other_scope)
         other_tf_sk = n4js_preloaded.query_transformations(scope=other_scope)[0]
-        _ = n4js_preloaded.create_task(other_tf_sk)
+        n4js_preloaded.create_task(other_tf_sk)
 
         # ask for the scope that we don't have access to
         status_counts = user_client.get_scope_status(other_scope)
@@ -1830,6 +1994,52 @@ class TestClient:
             )
 
         return protocoldagresults
+
+    def test_cached_pdr(
+        self, scope_test, n4js_preloaded, s3os_server, user_client, network_tyk2, tmpdir
+    ):
+
+        user_client._cache.clear()
+        user_client._cache.stats(reset=True)
+        user_client._async_get_protocoldagresult.cache_clear()
+
+        network_sk = user_client.get_scoped_key(network_tyk2, scope_test)
+
+        transformation = list(t for t in network_tyk2.edges if "_solvent" in t.name)[0]
+        transformation_sk = user_client.get_scoped_key(transformation, scope_test)
+
+        user_client.create_tasks(transformation_sk, count=3)
+
+        all_tasks = user_client.get_transformation_tasks(transformation_sk)
+        actioned_tasks = user_client.action_tasks(all_tasks, network_sk)
+
+        # execute the actioned tasks and push results directly using statestore and object store
+        with tmpdir.as_cwd():
+            self._execute_tasks(actioned_tasks, n4js_preloaded, s3os_server)
+
+        # make sure that we have reset all stats tracking before the intial pull
+        assert user_client._cache.stats(reset=True) == (0, 0)
+
+        user_client.get_transformation_results(transformation_sk)
+
+        # we expect four misses, but now the cache has length 4
+        # this is because the cache also captures the transformation, not just the PDRs
+        assert user_client._cache.stats() == (0, 4) and len(user_client._cache) == 4
+
+        # clear the in-memory lru cache, to ensure we check the on-disk cache
+        user_client._async_get_protocoldagresult.cache_clear()
+        user_client.get_transformation.cache_clear()
+
+        # running again should now pull results from the on-disk cache
+        user_client.get_transformation_results(transformation_sk)
+
+        assert user_client._cache.stats() == (4, 4) and len(user_client._cache) == 4
+
+        # when the alru is not cleared, we should not see misses or hits on the disk cache
+        # since the alru should populate from the results found on disk
+        user_client.get_transformation_results(transformation_sk)
+
+        assert user_client._cache.stats() == (4, 4) and len(user_client._cache) == 4
 
     def test_get_transformation_and_network_results(
         self,

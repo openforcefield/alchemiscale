@@ -8,19 +8,21 @@ import asyncio
 import time
 import random
 from itertools import islice
-from typing import List
 import json
 from urllib.parse import urljoin
 from functools import wraps
 import gzip
+from pathlib import Path
+import os
+from typing import Union, Optional
+from diskcache import Cache
 
 import requests
 import httpx
 
 from gufe.tokenization import GufeTokenizable, JSON_HANDLER
 
-from ..models import Scope, ScopedKey
-from ..storage.models import TaskHub, Task
+from ..models import ScopedKey
 
 
 def json_to_gufe(jsondata):
@@ -61,6 +63,8 @@ class AlchemiscaleBaseClient:
         api_url: str,
         identifier: str,
         key: str,
+        cache_directory: Optional[Union[Path, str]] = None,
+        cache_size_limit: int = 1073741824,
         max_retries: int = 5,
         retry_base_seconds: float = 2.0,
         retry_max_seconds: float = 60.0,
@@ -76,6 +80,13 @@ class AlchemiscaleBaseClient:
             Identifier for the identity used for authentication.
         key
             Credential for the identity used for authentication.
+        cache_directory
+            Location of the cache directory as either a `pathlib.Path` or `str`.
+            If `None` is provided then the directory will be determined via the
+            `XDG_CACHE_HOME` environment variable or default to
+            `${HOME}/.cache/alchemiscale`. Defaults to `None`.
+        cache_size_limit
+            Maximum size of the client cache. Defaults to 1 GB.
         max_retries
             Maximum number of times to retry a request. In the case the API
             service is unresponsive an exponential backoff is applied with
@@ -111,9 +122,39 @@ class AlchemiscaleBaseClient:
         self._session = None
         self._lock = None
 
+        if cache_size_limit < 0:
+            raise ValueError(
+                "`cache_size_limit` must be greater than or equal to zero."
+            )
+
+        self._cache = Cache(
+            self._determine_cache_dir(cache_directory),
+            size_limit=cache_size_limit,
+            eviction_policy="least-recently-used",
+        )
+
+    @staticmethod
+    def _determine_cache_dir(cache_directory: Optional[Union[Path, str]]):
+        if not (isinstance(cache_directory, (Path, str)) or cache_directory is None):
+            raise TypeError(
+                "`cache_directory` must be a `str`, `pathlib.Path`, or `None`."
+            )
+
+        if cache_directory is None:
+            default_dir = Path().home() / ".cache"
+            cache_directory = (
+                Path(os.getenv("XDG_CACHE_HOME", default_dir)) / "alchemiscale"
+            )
+        else:
+            cache_directory = Path(cache_directory)
+
+        return cache_directory.absolute()
+
     def _settings(self):
         return dict(
             api_url=self.api_url,
+            cache_directory=self._cache.directory,
+            cache_size_limit=self._cache.size_limit,
             identifier=self.identifier,
             key=self.key,
             max_retries=self.max_retries,
@@ -361,7 +402,7 @@ class AlchemiscaleBaseClient:
         if not 200 <= resp.status_code < 300:
             try:
                 detail = resp.json()["detail"]
-            except:
+            except Exception:
                 detail = resp.text
             raise self._exception(
                 f"Status Code {resp.status_code} : {resp.reason} : {detail}",
@@ -396,7 +437,7 @@ class AlchemiscaleBaseClient:
         if not 200 <= resp.status_code < 300:
             try:
                 detail = resp.json()["detail"]
-            except:
+            except Exception:
                 detail = resp.text
             raise self._exception(
                 f"Status Code {resp.status_code} : {resp.reason_phrase} : {detail}",
@@ -442,7 +483,7 @@ class AlchemiscaleBaseClient:
         if not 200 <= resp.status_code < 300:
             try:
                 detail = resp.json()["detail"]
-            except:
+            except Exception:
                 detail = resp.text
             raise self._exception(
                 f"Status Code {resp.status_code} : {resp.reason} : {detail}",
@@ -466,7 +507,7 @@ class AlchemiscaleBaseClient:
         if not 200 <= resp.status_code < 300:
             try:
                 detail = resp.json()["detail"]
-            except:
+            except Exception:
                 detail = resp.text
             raise self._exception(
                 f"Status Code {resp.status_code} : {resp.reason_phrase} : {detail}",
@@ -498,7 +539,6 @@ class AlchemiscaleBaseClient:
     @staticmethod
     def _rich_progress_columns():
         from rich.progress import (
-            Progress,
             SpinnerColumn,
             MofNCompleteColumn,
             TextColumn,
