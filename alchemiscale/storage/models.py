@@ -13,7 +13,7 @@ from uuid import uuid4
 import hashlib
 
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from gufe.tokenization import GufeTokenizable, GufeKey
 
 from ..models import ScopedKey, Scope
@@ -28,6 +28,8 @@ class ComputeServiceRegistration(BaseModel):
     identifier: ComputeServiceID
     registered: datetime
     heartbeat: datetime
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def __repr__(self):  # pragma: no cover
         return f"<ComputeServiceRegistration('{str(self)}')>"
@@ -58,6 +60,8 @@ class TaskProvenance(BaseModel):
     computeserviceid: ComputeServiceID
     datetime_start: datetime
     datetime_end: datetime
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # this should include versions of various libraries
 

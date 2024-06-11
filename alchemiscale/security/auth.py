@@ -25,12 +25,31 @@ def generate_secret_key():
     return secrets.token_hex(32)
 
 
-def authenticate(db, cls, identifier: str, key: str) -> CredentialedEntity:
+def authenticate(db, cls, identifier: str, key: str) -> Optional[CredentialedEntity]:
+    """Authenticate the given identity+key against the db instance.
+
+    Parameters
+    ----------
+    db
+        State store instance featuring a `get_credentialed_entity` method.
+    cls
+        The `CredentialedEntity` subclass the identity corresponds to.
+    identity
+        String identifier for the the identity.
+    key
+        Secret key string for the identity.
+
+    Returns
+    -------
+    If successfully authenticated, returns the `CredentialedEntity` subclass instance.
+    If not, returns `None`.
+
+    """
     entity: CredentialedEntity = db.get_credentialed_entity(identifier, cls)
     if entity is None:
-        return False
+        return None
     if not pwd_context.verify(key, entity.hashed_key):
-        return False
+        return None
     return entity
 
 
