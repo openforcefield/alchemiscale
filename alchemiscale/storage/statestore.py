@@ -14,7 +14,13 @@ import weakref
 import numpy as np
 
 import networkx as nx
-from gufe import AlchemicalNetwork, Transformation, NonTransformation, Settings
+from gufe import (
+    AlchemicalNetwork,
+    Transformation,
+    NonTransformation,
+    Settings,
+    Protocol,
+)
 from gufe.tokenization import GufeTokenizable, GufeKey, JSON_HANDLER
 
 from neo4j import Transaction, GraphDatabase, Driver
@@ -31,7 +37,7 @@ from .models import (
 )
 from ..strategies import Strategy
 from ..models import Scope, ScopedKey
-from .cypher import cypher_list_from_scoped_keys
+from .cypher import cypher_list_from_scoped_keys, cypher_or
 
 from ..security.models import CredentialedEntity
 from ..settings import Neo4jStoreSettings
@@ -1655,7 +1661,11 @@ class Neo4jStore(AlchemiscaleStateStore):
             return [ScopedKey.from_str(t["_scoped_key"]) for t in tasks]
 
     def claim_taskhub_tasks(
-        self, taskhub: ScopedKey, compute_service_id: ComputeServiceID, count: int = 1
+        self,
+        taskhub: ScopedKey,
+        compute_service_id: ComputeServiceID,
+        count: int = 1,
+        protocols: Optional[List[Protocol]] = None,
     ) -> List[Union[ScopedKey, None]]:
         """Claim a TaskHub Task.
 
@@ -1676,8 +1686,13 @@ class Neo4jStore(AlchemiscaleStateStore):
             Unique identifier for the compute service claiming the Tasks for execution.
         count
             Claim the given number of Tasks in a single transaction.
+        protocols
+            Protocols to restrict Task claiming to. `None` means no restriction.
+            If an empty list, raises ValueError.
 
         """
+        if protocols is not None and len(protocols) == 0:
+            raise ValueError("`protocols` must be either `None` or not empty")
 
         q = f"""
             MATCH (th:TaskHub {{`_scoped_key`: '{taskhub}'}})-[actions:ACTIONS]-(task:Task)
@@ -1686,6 +1701,16 @@ class Neo4jStore(AlchemiscaleStateStore):
             OPTIONAL MATCH (task)-[:EXTENDS]->(other_task:Task)
 
             WITH task, other_task, actions
+            """
+
+        # filter down to `protocols`, if specified
+        if protocols is not None:
+            q += f"""
+            MATCH (task)-[:PERFORMS]->(:Transformation)-[:DEPENDS_ON]->(protocol:{cypher_or(protocols)})
+            WITH task, other_task, actions
+            """
+
+        q += f"""
             WHERE other_task.status = '{TaskStatusEnum.complete.value}' OR other_task IS NULL
 
             RETURN task.`_scoped_key`, task.priority, actions.weight

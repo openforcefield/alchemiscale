@@ -24,3 +24,7 @@ def cypher_list_from_scoped_keys(scoped_keys: List[Optional[ScopedKey]]) -> str:
         if scoped_key:
             data.append('"' + str(scoped_key) + '"')
     return "[" + ", ".join(data) + "]"
+
+
+def cypher_or(items):
+    return "|".join(items)

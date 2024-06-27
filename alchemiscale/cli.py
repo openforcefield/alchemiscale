@@ -362,6 +362,7 @@ def api(
 def synchronous(config_file):
     from alchemiscale.models import Scope
     from alchemiscale.compute.service import SynchronousComputeService
+    from alchemiscale.compute.settings import ComputeServiceSettings
 
     params = yaml.safe_load(config_file)
 
@@ -373,7 +374,7 @@ def synchronous(config_file):
             Scope.from_str(scope) for scope in params_init["scopes"]
         ]
 
-    service = SynchronousComputeService(**params_init)
+    service = SynchronousComputeService(ComputeServiceSettings(**params_init))
 
     # add signal handling
     for signame in {"SIGHUP", "SIGINT", "SIGTERM"}:

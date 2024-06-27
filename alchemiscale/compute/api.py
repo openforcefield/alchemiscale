@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import os
 import json
 from datetime import datetime, timedelta
+import random
 
 from fastapi import FastAPI, APIRouter, Body, Depends
 from fastapi.middleware.gzip import GZipMiddleware
@@ -23,6 +24,7 @@ from ..base.api import (
     get_cred_entity,
     validate_scopes,
     validate_scopes_query,
+    minimize_scope_space,
     _check_store_connectivity,
     gufe_to_json,
     GzipRoute,
@@ -177,6 +179,7 @@ def claim_taskhub_tasks(
     *,
     compute_service_id: str = Body(),
     count: int = Body(),
+    protocols: Optional[List[str]] = Body(None, embed=True),
     n4js: Neo4jStore = Depends(get_n4js_depends),
     token: TokenData = Depends(get_token_data_depends),
 ):
@@ -187,13 +190,91 @@ def claim_taskhub_tasks(
         taskhub=taskhub_scoped_key,
         compute_service_id=ComputeServiceID(compute_service_id),
         count=count,
+        protocols=protocols,
     )
+
+    return [str(t) if t is not None else None for t in tasks]
+
+
+@router.post("/claim")
+def claim_tasks(
+    scopes: List[Scope] = Body(),
+    compute_service_id: str = Body(),
+    count: int = Body(),
+    protocols: Optional[List[str]] = Body(None, embed=True),
+    n4js: Neo4jStore = Depends(get_n4js_depends),
+    token: TokenData = Depends(get_token_data_depends),
+):
+    # intersect query scopes with accessible scopes in the token
+    scopes_reduced = minimize_scope_space(scopes)
+    query_scopes = []
+    for scope in scopes_reduced:
+        query_scopes.extend(validate_scopes_query(scope, token))
+
+    taskhubs = dict()
+    # query each scope for available taskhubs
+    # loop might be more removable in the future with a Union like operator on scopes
+    for single_query_scope in set(query_scopes):
+        taskhubs.update(n4js.query_taskhubs(scope=single_query_scope, return_gufe=True))
+
+    # list of tasks to return
+    tasks = []
+
+    if len(taskhubs) == 0:
+        return []
+
+    # claim tasks from taskhubs based on weight; keep going till we hit our
+    # total desired task count, or we run out of taskhubs to draw from
+    while len(tasks) < count and len(taskhubs) > 0:
+        weights = [th.weight for th in taskhubs.values()]
+
+        if sum(weights) == 0:
+            break
+
+        # based on weights, choose taskhub to draw from
+        taskhub: ScopedKey = random.choices(list(taskhubs.keys()), weights=weights)[0]
+
+        # claim tasks from the taskhub
+        claimed_tasks = n4js.claim_taskhub_tasks(
+            taskhub,
+            compute_service_id=ComputeServiceID(compute_service_id),
+            count=(count - len(tasks)),
+            protocols=protocols,
+        )
+
+        # gather up claimed tasks, if present
+        for t in claimed_tasks:
+            if t is not None:
+                tasks.append(t)
+
+        # remove this taskhub from the options available; repeat
+        taskhubs.pop(taskhub)
 
     return [str(t) if t is not None else None for t in tasks]
 
 
 @router.get("/tasks/{task_scoped_key}/transformation")
 def get_task_transformation(
+    task_scoped_key,
+    *,
+    n4js: Neo4jStore = Depends(get_n4js_depends),
+    token: TokenData = Depends(get_token_data_depends),
+):
+    sk = ScopedKey.from_str(task_scoped_key)
+    validate_scopes(sk.scope, token)
+
+    transformation: ScopedKey
+
+    transformation, protocoldagresultref = n4js.get_task_transformation(
+        task=task_scoped_key,
+        return_gufe=False,
+    )
+
+    return str(transformation)
+
+
+@router.get("/tasks/{task_scoped_key}/transformation/gufe")
+def retrieve_task_transformation(
     task_scoped_key,
     *,
     n4js: Neo4jStore = Depends(get_n4js_depends),

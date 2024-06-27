@@ -24,6 +24,7 @@ from gufe import Transformation
 from gufe.protocols.protocoldag import execute_DAG, ProtocolDAG, ProtocolDAGResult
 
 from .client import AlchemiscaleComputeClient
+from .settings import ComputeServiceSettings
 from ..storage.models import Task, TaskHub, ComputeServiceID
 from ..models import Scope, ScopedKey
 
@@ -73,114 +74,38 @@ class SynchronousComputeService:
 
     """
 
-    def __init__(
-        self,
-        api_url: str,
-        identifier: str,
-        key: str,
-        name: str,
-        shared_basedir: os.PathLike,
-        scratch_basedir: os.PathLike,
-        keep_shared: bool = False,
-        keep_scratch: bool = False,
-        n_retries: int = 3,
-        sleep_interval: int = 30,
-        heartbeat_interval: int = 300,
-        scopes: Optional[List[Scope]] = None,
-        claim_limit: int = 1,
-        loglevel="WARN",
-        logfile: Optional[Path] = None,
-        client_max_retries=5,
-        client_retry_base_seconds=2.0,
-        client_retry_max_seconds=60.0,
-        client_verify=True,
-    ):
-        """Create a `SynchronousComputeService` instance.
+    def __init__(self, settings: ComputeServiceSettings):
+        """Create a `SynchronousComputeService` instance."""
+        self.settings = settings
 
-        Parameters
-        ----------
-        api_url
-            URL of the compute API to execute Tasks for.
-        identifier
-            Identifier for the compute identity used for authentication.
-        key
-            Credential for the compute identity used for authentication.
-        name
-            The name to give this compute service; used for Task provenance, so
-            typically set to a distinct value to distinguish different compute
-            resources, e.g. different hosts or HPC clusters.
-        shared_basedir
-            Filesystem path to use for `ProtocolDAG` `shared` space.
-        scratch_basedir
-            Filesystem path to use for `ProtocolUnit` `scratch` space.
-        keep_shared
-            If True, don't remove shared directories for `ProtocolDAG`s after
-            completion.
-        keep_scratch
-            If True, don't remove scratch directories for `ProtocolUnit`s after
-            completion.
-        n_retries
-            Number of times to attempt a given Task on failure.
-        sleep_interval
-            Time in seconds to sleep if no Tasks claimed from compute API.
-        heartbeat_interval
-            Frequency at which to send heartbeats to compute API.
-        scopes
-            Scopes to limit Task claiming to; defaults to all Scopes accessible
-            by compute identity.
-        claim_limit
-            Maximum number of Tasks to claim at a time from a TaskHub.
-        loglevel
-            The loglevel at which to report; see the :mod:`logging` docs for
-            available levels.
-        logfile
-            Path to file for logging output; if not set, logging will only go
-            to STDOUT.
-        client_max_retries
-            Maximum number of times to retry a request. In the case the API
-            service is unresponsive an expoenential backoff is applied with
-            retries until this number is reached. If set to -1, retries will
-            continue indefinitely until success.
-        client_retry_base_seconds
-            The base number of seconds to use for exponential backoff.
-            Must be greater than 1.0.
-        client_retry_max_seconds
-            Maximum number of seconds to sleep between retries; avoids runaway
-            exponential backoff while allowing for many retries.
-        client_verify
-            Whether to verify SSL certificate presented by the API server.
-
-        """
-        self.api_url = api_url
-        self.name = name
-        self.sleep_interval = sleep_interval
-        self.heartbeat_interval = heartbeat_interval
-        self.claim_limit = claim_limit
+        self.api_url = self.settings.api_url
+        self.name = self.settings.name
+        self.sleep_interval = self.settings.sleep_interval
+        self.heartbeat_interval = self.settings.heartbeat_interval
+        self.claim_limit = self.settings.claim_limit
 
         self.client = AlchemiscaleComputeClient(
-            api_url,
-            identifier,
-            key,
-            max_retries=client_max_retries,
-            retry_base_seconds=client_retry_base_seconds,
-            retry_max_seconds=client_retry_max_seconds,
-            verify=client_verify,
+            self.settings.api_url,
+            self.settings.identifier,
+            self.settings.key,
+            max_retries=self.settings.client_max_retries,
+            retry_base_seconds=self.settings.client_retry_base_seconds,
+            retry_max_seconds=self.settings.client_retry_max_seconds,
+            verify=self.settings.client_verify,
         )
 
-        if scopes is None:
+        if self.settings.scopes is None:
             self.scopes = [Scope()]
         else:
-            self.scopes = scopes
+            self.scopes = self.settings.scopes
 
-        self.shared_basedir = Path(shared_basedir).absolute()
+        self.shared_basedir = Path(self.settings.shared_basedir).absolute()
         self.shared_basedir.mkdir(exist_ok=True)
-        self.keep_shared = keep_shared
+        self.keep_shared = self.settings.keep_shared
 
-        self.scratch_basedir = Path(scratch_basedir).absolute()
+        self.scratch_basedir = Path(self.settings.scratch_basedir).absolute()
         self.scratch_basedir.mkdir(exist_ok=True)
-        self.keep_scratch = keep_scratch
-
-        self.n_retries = n_retries
+        self.keep_scratch = self.settings.keep_scratch
 
         self.scheduler = sched.scheduler(time.monotonic, time.sleep)
 
@@ -193,7 +118,7 @@ class SynchronousComputeService:
         # logging
         extra = {"compute_service_id": str(self.compute_service_id)}
         logger = logging.getLogger("AlchemiscaleSynchronousComputeService")
-        logger.setLevel(loglevel)
+        logger.setLevel(self.settings.loglevel)
 
         formatter = logging.Formatter(
             "[%(asctime)s] [%(compute_service_id)s] [%(levelname)s] %(message)s"
@@ -204,8 +129,8 @@ class SynchronousComputeService:
         sh.setFormatter(formatter)
         logger.addHandler(sh)
 
-        if logfile is not None:
-            fh = logging.FileHandler(logfile)
+        if self.settings.logfile is not None:
+            fh = logging.FileHandler(self.settings.logfile)
             fh.setFormatter(formatter)
             logger.addHandler(fh)
 
@@ -232,49 +157,29 @@ class SynchronousComputeService:
             self.beat()
             time.sleep(self.heartbeat_interval)
 
-    def claim_tasks(self, count=1) -> List[Optional[ScopedKey]]:
+    def claim_tasks(
+        self, count=1, protocols: Optional[List[str]] = None
+    ) -> List[Optional[ScopedKey]]:
         """Get a Task to execute from compute API.
 
         Returns `None` if no Task was available matching service configuration.
 
+        Parameters
+        ----------
+        count
+            The maximum number of Tasks to claim.
+        protocols
+            Protocol names to restrict Task claiming to. `None` means no restriction.
+            Regex patterns are allowed.
+
         """
-        # list of tasks to return
-        tasks = []
 
-        taskhubs: Dict[ScopedKey, TaskHub] = self.client.query_taskhubs(
-            scopes=self.scopes, return_gufe=True
+        tasks = self.client.claim_tasks(
+            scopes=self.scopes,
+            compute_service_id=self.compute_service_id,
+            count=count,
+            protocols=protocols,
         )
-
-        if len(taskhubs) == 0:
-            return []
-
-        # claim tasks from taskhubs based on weight; keep going till we hit our
-        # total desired task count, or we run out of taskhubs to draw from
-        while len(tasks) < count and len(taskhubs) > 0:
-            weights = [th.weight for th in taskhubs.values()]
-
-            if sum(weights) == 0:
-                break
-
-            # based on weights, choose taskhub to draw from
-            taskhub: List[ScopedKey] = random.choices(
-                list(taskhubs.keys()), weights=weights
-            )[0]
-
-            # claim tasks from the taskhub
-            claimed_tasks = self.client.claim_taskhub_tasks(
-                taskhub,
-                compute_service_id=self.compute_service_id,
-                count=(count - len(tasks)),
-            )
-
-            # gather up claimed tasks, if present
-            for t in claimed_tasks:
-                if t is not None:
-                    tasks.append(t)
-
-            # remove this taskhub from the options available; repeat
-            taskhubs.pop(taskhub)
 
         return tasks
 
@@ -289,9 +194,10 @@ class SynchronousComputeService:
 
         """
 
-        transformation, extends_protocoldagresult = self.client.get_task_transformation(
-            task
-        )
+        (
+            transformation,
+            extends_protocoldagresult,
+        ) = self.client.retrieve_task_transformation(task)
 
         protocoldag = transformation.create(
             extends=extends_protocoldagresult,
@@ -346,7 +252,7 @@ class SynchronousComputeService:
                 scratch_basedir=scratch,
                 keep_scratch=self.keep_scratch,
                 raise_error=False,
-                n_retries=self.n_retries,
+                n_retries=self.settings.n_retries,
             )
         finally:
             if not self.keep_shared:

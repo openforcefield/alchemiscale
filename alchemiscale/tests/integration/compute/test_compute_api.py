@@ -63,13 +63,15 @@ class TestComputeAPI:
         assert len(task_sks) > 0
         return {"network": network_sk, "taskhub": tq_sk, "tasks": task_sks}
 
-    def test_get_task_transformation(
+    def test_retrieve_task_transformation(
         self,
         n4js_preloaded,
         test_client,
         scoped_keys,
     ):
-        response = test_client.get(f"/tasks/{scoped_keys['tasks'][0]}/transformation")
+        response = test_client.get(
+            f"/tasks/{scoped_keys['tasks'][0]}/transformation/gufe"
+        )
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2

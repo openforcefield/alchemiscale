@@ -44,6 +44,9 @@ init:
   scopes:
     - '*-*-*'
 
+  # Names of Protocols to run with this service; `None` means no restriction
+  protocols: null
+
   # Maximum number of Tasks to claim at a time from a TaskHub.
   claim_limit: 1
 

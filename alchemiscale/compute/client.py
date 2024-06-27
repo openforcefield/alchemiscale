@@ -35,15 +35,17 @@ class AlchemiscaleComputeClient(AlchemiscaleBaseClient):
     _exception = AlchemiscaleComputeClientError
 
     def register(self, compute_service_id: ComputeServiceID):
-        res = self._post_resource(f"computeservice/{compute_service_id}/register", {})
+        res = self._post_resource(f"/computeservice/{compute_service_id}/register", {})
         return ComputeServiceID(res)
 
     def deregister(self, compute_service_id: ComputeServiceID):
-        res = self._post_resource(f"computeservice/{compute_service_id}/deregister", {})
+        res = self._post_resource(
+            f"/computeservice/{compute_service_id}/deregister", {}
+        )
         return ComputeServiceID(res)
 
     def heartbeat(self, compute_service_id: ComputeServiceID):
-        res = self._post_resource(f"computeservice/{compute_service_id}/heartbeat", {})
+        res = self._post_resource(f"/computeservice/{compute_service_id}/heartbeat", {})
         return ComputeServiceID(res)
 
     def list_scopes(self) -> List[Scope]:
@@ -71,19 +73,48 @@ class AlchemiscaleComputeClient(AlchemiscaleBaseClient):
         return taskhubs
 
     def claim_taskhub_tasks(
-        self, taskhub: ScopedKey, compute_service_id: ComputeServiceID, count: int = 1
+        self,
+        taskhub: ScopedKey,
+        compute_service_id: ComputeServiceID,
+        count: int = 1,
+        protocols: Optional[List[str]] = None,
     ) -> Task:
         """Claim a `Task` from the specified `TaskHub`"""
-        data = dict(compute_service_id=str(compute_service_id), count=count)
-        tasks = self._post_resource(f"taskhubs/{taskhub}/claim", data)
+        data = dict(
+            compute_service_id=str(compute_service_id), count=count, protocols=protocols
+        )
+        tasks = self._post_resource(f"/taskhubs/{taskhub}/claim", data)
 
         return [ScopedKey.from_str(t) if t is not None else None for t in tasks]
 
-    def get_task_transformation(
+    def claim_tasks(
+        self,
+        scopes: List[Scope],
+        compute_service_id: ComputeServiceID,
+        count: int = 1,
+        protocols: Optional[List[str]] = None,
+    ):
+        """Claim Tasks from TaskHubs within a list of Scopes."""
+        data = dict(
+            scopes=[scope.dict() for scope in scopes],
+            compute_service_id=str(compute_service_id),
+            count=count,
+            protocols=protocols,
+        )
+        tasks = self._post_resource("/claim", data)
+
+        return [ScopedKey.from_str(t) if t is not None else None for t in tasks]
+
+    def get_task_transformation(self, task: ScopedKey) -> ScopedKey:
+        """Get the Transformation associated with the given Task."""
+        transformation = self._get_resource(f"/tasks/{task}/transformation")
+        return ScopedKey.from_str(transformation)
+
+    def retrieve_task_transformation(
         self, task: ScopedKey
     ) -> Tuple[Transformation, Optional[ProtocolDAGResult]]:
         transformation, protocoldagresult = self._get_resource(
-            f"tasks/{task}/transformation"
+            f"/tasks/{task}/transformation/gufe"
         )
 
         return (
@@ -104,6 +135,6 @@ class AlchemiscaleComputeClient(AlchemiscaleBaseClient):
             compute_service_id=str(compute_service_id),
         )
 
-        pdr_sk = self._post_resource(f"tasks/{task}/results", data)
+        pdr_sk = self._post_resource(f"/tasks/{task}/results", data)
 
         return ScopedKey.from_dict(pdr_sk)
