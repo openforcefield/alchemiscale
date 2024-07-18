@@ -8,12 +8,12 @@ from abc import abstractmethod
 from copy import copy
 from datetime import datetime
 from enum import Enum
-from typing import Union, Dict, Optional
+from typing import Union, Optional, List
 from uuid import uuid4
 import hashlib
 
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from gufe.tokenization import GufeTokenizable, GufeKey
 
 from ..models import ScopedKey, Scope
@@ -141,6 +141,84 @@ class Task(GufeTokenizable):
     @classmethod
     def _defaults(cls):
         return super()._defaults()
+
+
+# TODO: fill in docstrings
+class TaskRestartPattern(GufeTokenizable):
+    """A pattern to compare returned Task tracebacks to.
+
+    Attributes
+    ----------
+    pattern: str
+        A regular expression pattern that can match to returned tracebacks of errored Tasks.
+    max_retries: int
+        The number of times the pattern can trigger a restart for a Task.
+    """
+
+    pattern: str
+    max_retries: int
+
+    def __init__(self, pattern: str, max_retries: int):
+
+        if not isinstance(pattern, str) or pattern == "":
+            raise ValueError("`pattern` must be a non-empty string")
+
+        self.pattern = pattern
+
+        if not isinstance(max_retries, int) or max_retries <= 0:
+            raise ValueError("`max_retries` must have a positive integer value.")
+        self.max_retries = max_retries
+
+    # TODO: these hashes can overlap across TaskHubs
+    def _gufe_tokenize(self):
+        return hashlib.md5(self.pattern.encode()).hexdigest()
+
+    @classmethod
+    def _defaults(cls):
+        raise NotImplementedError
+
+    @classmethod
+    def _from_dict(cls, dct):
+        return cls(**dct)
+
+    def _to_dict(self):
+        return {"pattern": self.pattern, "max_retries": self.max_retries}
+
+    def __eq__(self, other):
+        if not isinstance(other, self.__class__):
+            return False
+        return self.pattern == other.pattern
+
+
+class Traceback(GufeTokenizable):
+
+    def __init__(self, tracebacks: List[str]):
+        value_error = ValueError(
+            "`tracebacks` must be a non-empty list of string values"
+        )
+        if not isinstance(tracebacks, list) or tracebacks == []:
+            raise value_error
+        else:
+            # in the case where tracebacks is not an iterable, this will raise a TypeError
+            all_string_values = all([isinstance(value, str) for value in tracebacks])
+            if not all_string_values or "" in tracebacks:
+                raise value_error
+
+        self.tracebacks = tracebacks
+
+    def _gufe_tokenize(self):
+        return hashlib.md5(str(self.tracebacks).encode()).hexdigest()
+
+    @classmethod
+    def _defaults(cls):
+        raise NotImplementedError
+
+    @classmethod
+    def _from_dict(cls, dct):
+        return Traceback(**dct)
+
+    def _to_dict(self):
+        return {"tracebacks": self.tracebacks}
 
 
 class TaskHub(GufeTokenizable):

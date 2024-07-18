@@ -2123,3 +2123,31 @@ class TestClient:
 
         # TODO: can we mix in a success in here somewhere?
         # not possible with current BrokenProtocol, unfortunately
+
+    # TaskRestartPolicy client methods
+
+    @pytest.mark.xfail(raises=NotImplementedError)
+    def test_add_task_restart_policy_patterns(self):
+        raise NotImplementedError
+
+    @pytest.mark.xfail(raises=NotImplementedError)
+    def test_get_task_restart_policy_patterns(self):
+        raise NotImplementedError
+
+    @pytest.mark.xfail(raises=NotImplementedError)
+    def test_remove_task_restart_policy_patterns(self):
+        raise NotImplementedError
+
+    @pytest.mark.xfail(raises=NotImplementedError)
+    def test_clear_task_restart_policy_patterns(self):
+        raise NotImplementedError
+
+    @pytest.mark.xfail(raises=NotImplementedError)
+    def test_task_resolve_restarts(
+        self,
+        scope_test,
+        n4js_preloaded,
+        user_client: client.AlchemiscaleClient,
+        network_tyk2_failure,
+    ):
+        raise NotImplementedError

@@ -30,10 +30,10 @@ from .models import (
     ComputeServiceRegistration,
     NetworkMark,
     NetworkStateEnum,
+    ProtocolDAGResultRef,
     Task,
     TaskHub,
     TaskStatusEnum,
-    ProtocolDAGResultRef,
 )
 from ..strategies import Strategy
 from ..models import Scope, ScopedKey
@@ -2733,6 +2733,20 @@ class Neo4jStore(AlchemiscaleStateStore):
             return f"Cannot set task {t} with current status: {status} to `deleted` as it is `invalid`."
 
         return self._set_task_status(tasks, q, err_msg, raise_error=raise_error)
+
+    ## task restart policy
+
+    # TODO: fill in docstring
+    def add_task_restart_policy_patterns(
+        self, taskhub: ScopedKey, patterns: List[str], number_of_retries: int
+    ):
+        """Add a list of restart policy patterns to a `TaskHub` along with the number of retries allowed.
+
+        Parameters
+        ----------
+
+        """
+        raise NotImplementedError
 
     ## authentication
 
