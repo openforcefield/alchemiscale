@@ -7,7 +7,7 @@
 from datetime import datetime, timedelta
 from typing import List, Union, Optional
 
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 
 from ..models import Scope
 
@@ -30,22 +30,24 @@ class CredentialedEntity(BaseModel):
 class ScopedIdentity(BaseModel):
     identifier: str
     disabled: bool = False
-    scopes: List[str] = []
+    scopes: List[Union[Scope, str]] = []
 
-    @validator("scopes", pre=True, each_item=True)
-    def cast_scopes_to_str(cls, scope):
+    @field_validator("scopes")
+    def cast_scopes_to_str(cls, scopes):
         """Ensure that each scope object is correctly cast to its str representation"""
-        if isinstance(scope, Scope):
-            scope = str(scope)
-        elif isinstance(scope, str):
-            try:
-                Scope.from_str(scope)
-            except:
+        scopes_ = []
+        for scope in scopes:
+            if isinstance(scope, Scope):
+                scopes_.append(str(scope))
+            elif isinstance(scope, str):
+                try:
+                    scopes_.append(str(Scope.from_str(scope)))
+                except:
+                    raise ValueError(f"Invalid scope `{scope}` set for `{cls}`")
+            else:
                 raise ValueError(f"Invalid scope `{scope}` set for `{cls}`")
-        else:
-            raise ValueError(f"Invalid scope `{scope}` set for `{cls}`")
 
-        return scope
+        return scopes_
 
 
 class UserIdentity(ScopedIdentity):

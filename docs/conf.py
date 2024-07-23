@@ -46,6 +46,7 @@ autodoc_mock_imports = [
     "passlib",
     "py2neo",
     "pydantic",
+    "pydantic_settings",
     "starlette",
     "yaml",
 ]

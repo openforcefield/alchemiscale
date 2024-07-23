@@ -15,7 +15,8 @@ dependencies:
   - openmmforcefields>=0.12.0
   - requests
   - click
-  - pydantic<2.0
+  - pydantic >1
+  - pydantic-settings
 
   ## state store
   - neo4j-python-driver

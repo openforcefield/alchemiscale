@@ -15,7 +15,8 @@ dependencies:
   - requests
   - click
   - httpx
-  - pydantic<2.0
+  - pydantic >1
+  - pydantic-settings
 
   ## user client printing
   - rich

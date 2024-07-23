@@ -108,7 +108,7 @@ def register_computeservice(
 ):
     now = datetime.utcnow()
     csreg = ComputeServiceRegistration(
-        identifier=compute_service_id, registered=now, heartbeat=now
+        identifier=ComputeServiceID(compute_service_id), registered=now, heartbeat=now
     )
 
     compute_service_id_ = n4js.register_computeservice(csreg)
