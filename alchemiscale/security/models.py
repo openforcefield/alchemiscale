@@ -7,7 +7,7 @@
 from datetime import datetime, timedelta
 from typing import List, Union, Optional
 
-from pydantic import BaseModel, validator
+from pydantic.v1 import BaseModel, validator
 
 from ..models import Scope
 

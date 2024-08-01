@@ -29,6 +29,9 @@ jobs:
         python-version:
           - "3.9"
           - "3.10"
+        pydantic-version:
+          - "1.10.17"
+          - "2"
 
     steps:
       - uses: actions/checkout@v2
@@ -38,6 +41,10 @@ jobs:
           environment-file: devtools/conda-envs/test.yml
           create-args: >-
             python=${{ matrix.python-version }}
+
+      - name: Optionally install Pydantic 1
+        if: ${{ matrix.pydantic-version == '1.10.17' }}
+        run: pip install "pydantic==1.10.17"
 
       - name: "Install"
         run: python -m pip install --no-deps -e .
@@ -49,7 +56,7 @@ jobs:
 
       - name: "Run tests"
         run: |
-          pytest -v --cov=alchemiscale --cov-report=xml alchemiscale/tests
+          pytest -v --cov=alchemiscale --cov-report=xml alchemiscale/tests --durations=20 -x
 
       - name: codecov
         if: ${{ github.repository == 'openforcefield/alchemiscale'

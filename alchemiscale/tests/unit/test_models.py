@@ -1,6 +1,6 @@
 import pytest
 
-from pydantic import ValidationError
+from pydantic.v1 import ValidationError
 
 from alchemiscale.models import Scope
 

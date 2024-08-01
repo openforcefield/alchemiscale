@@ -12,7 +12,7 @@ from fastapi import HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic.v1 import BaseModel
 
 from .models import Token, TokenData, CredentialedEntity
 

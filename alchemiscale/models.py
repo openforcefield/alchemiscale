@@ -5,7 +5,7 @@
 """
 
 from typing import Optional, Union
-from pydantic import BaseModel, Field, validator, root_validator
+from pydantic.v1 import BaseModel, Field, validator, root_validator
 from gufe.tokenization import GufeKey
 from re import fullmatch
 
