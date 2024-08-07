@@ -1944,6 +1944,65 @@ class TestNeo4jStore(TestStateStore):
         assert pdr_ref_sk in failure_pdr_ref_sks
         assert pdr_ref2_sk in failure_pdr_ref_sks
 
+    @pytest.mark.parametrize("failure_count", (1, 2, 3, 4))
+    def test_add_protocol_dag_result_ref_traceback(
+        self,
+        network_tyk2_failure,
+        n4js,
+        scope_test,
+        transformation_failure,
+        protocoldagresults_failure,
+        failure_count: int,
+    ):
+
+        an = network_tyk2_failure.copy_with_replacements(
+            name=network_tyk2_failure.name
+            + "_test_add_protocol_dag_result_ref_traceback"
+        )
+        n4js.assemble_network(an, scope_test)
+        transformation_scoped_key = n4js.get_scoped_key(
+            transformation_failure, scope_test
+        )
+
+        # create a task; pretend we computed it, submit reference for pre-baked
+        # result
+        task_scoped_key = n4js.create_task(transformation_scoped_key)
+
+        protocol_unit_failure = protocoldagresults_failure[0].protocol_unit_failures[0]
+
+        pdrr = ProtocolDAGResultRef(
+            scope=task_scoped_key.scope,
+            obj_key=protocoldagresults_failure[0].key,
+            ok=protocoldagresults_failure[0].ok(),
+        )
+
+        # push the result
+        pdrr_scoped_key = n4js.set_task_result(task_scoped_key, pdrr)
+
+        # simulating many failures
+        protocol_unit_failures = []
+        for failure_index in range(failure_count):
+            protocol_unit_failures.append(
+                protocol_unit_failure.copy_with_replacements(
+                    traceback=protocol_unit_failure.traceback + "_" + str(failure_index)
+                )
+            )
+
+        n4js.add_protocol_dag_result_ref_traceback(
+            protocol_unit_failures, pdrr_scoped_key
+        )
+
+        query = """
+        MATCH (traceback:Traceback)-[:DETAILS]->(:ProtocolDAGResultRef {`_scoped_key`: $pdrr_scoped_key})
+        RETURN traceback
+        """
+
+        results = n4js.execute_query(query, pdrr_scoped_key=str(pdrr_scoped_key))
+
+        returned_tracebacks = results.records[0]["traceback"]["tracebacks"]
+
+        assert returned_tracebacks == [puf.traceback for puf in protocol_unit_failures]
+
     ### task restart policies
 
     class TestTaskRestartPolicy:
@@ -2224,6 +2283,47 @@ class TestNeo4jStore(TestStateStore):
             taskhub_grouped_patterns = n4js.get_task_restart_patterns(taskhub_sks)
 
             assert taskhub_grouped_patterns == expected_results
+
+        @pytest.mark.xfail(raises=NotImplementedError)
+        def test_resolve_task_restarts(
+            self,
+            n4js,
+            network_tyk2_failure,
+            scope_test,
+            transformation_failure,
+            protocoldagresults_failure,
+        ):
+
+            an = network_tyk2_failure.copy_with_replacements(
+                name=network_tyk2_failure.name
+                + "_test_add_protocol_dag_result_ref_traceback"
+            )
+            n4js.assemble_network(an, scope_test)
+            transformation_scoped_key = n4js.get_scoped_key(
+                transformation_failure, scope_test
+            )
+
+            # create a task; pretend we computed it, submit reference for pre-baked
+            # result
+            task_scoped_key = n4js.create_task(transformation_scoped_key)
+
+            protocol_unit_failure = protocoldagresults_failure[
+                0
+            ].protocol_unit_failures[0]
+
+            from datetime import datetime
+
+            for index in range(5):
+                pdrr = ProtocolDAGResultRef(
+                    scope=task_scoped_key.scope,
+                    obj_key=protocoldagresults_failure[0].key,
+                    ok=protocoldagresults_failure[0].ok(),
+                    datetime_created=datetime.utcnow(),
+                )
+
+                pdrr_scoped_key = n4js.set_task_result(task_scoped_key, pdrr)
+
+            raise NotImplementedError
 
         @pytest.mark.xfail(raises=NotImplementedError)
         def test_task_actioning_applies_relationship(self):
