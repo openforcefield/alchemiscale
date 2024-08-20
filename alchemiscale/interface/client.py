@@ -491,6 +491,30 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
             f"/chemicalsystems/{chemicalsystem}/transformations"
         )
 
+    def _get_keyed_chain_resource(self, scopedkey: ScopedKey, get_content_function):
+
+        content = None
+
+        try:
+            cached_keyed_chain = self._cache.get(str(scopedkey), None).decode("utf-8")
+            content = json.loads(cached_keyed_chain, cls=JSON_HANDLER.decoder)
+        # JSON could not decode
+        except json.JSONDecodeError:
+            warn(
+                f"Error decoding cached {scopedkey.qualname} ({scopedkey}), deleting entry and retriving new content."
+            )
+            self._cache.delete(str(scopedkey))
+        # when trying to call the decode method with a None (i.e. cached entry not found)
+        except AttributeError:
+            pass
+
+        if content is None:
+            content = get_content_function()
+            keyedchain_json = json.dumps(content, cls=JSON_HANDLER.encoder)
+            self._cache.add(str(scopedkey), keyedchain_json.encode("utf-8"))
+
+        return KeyedChain(content).to_gufe()
+
     @lru_cache(maxsize=100)
     def get_network(
         self,
@@ -520,9 +544,12 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
 
         """
 
+        if isinstance(network, str):
+            network = ScopedKey.from_str(network)
+
         def _get_network():
             content = self._get_resource(f"/networks/{network}", compress=compress)
-            return KeyedChain(content).to_gufe()
+            return content
 
         if visualize:
             from rich.progress import Progress
@@ -532,12 +559,12 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
                     f"Retrieving [bold]'{network}'[/bold]...", total=None
                 )
 
-                an = _get_network()
+                an = self._get_keyed_chain_resource(network, _get_network)
 
                 progress.start_task(task)
                 progress.update(task, total=1, completed=1)
         else:
-            an = _get_network()
+            an = self._get_keyed_chain_resource(network, _get_network)
         return an
 
     @lru_cache(maxsize=10000)
@@ -569,11 +596,14 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
 
         """
 
+        if isinstance(transformation, str):
+            transformation = ScopedKey.from_str(transformation)
+
         def _get_transformation():
             content = self._get_resource(
                 f"/transformations/{transformation}", compress=compress
             )
-            return KeyedChain(content).to_gufe()
+            return content
 
         if visualize:
             from rich.progress import Progress
@@ -583,11 +613,11 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
                     f"Retrieving [bold]'{transformation}'[/bold]...", total=None
                 )
 
-                tf = _get_transformation()
+                tf = self._get_keyed_chain_resource(transformation, _get_transformation)
                 progress.start_task(task)
                 progress.update(task, total=1, completed=1)
         else:
-            tf = _get_transformation()
+            tf = self._get_keyed_chain_resource(transformation, _get_transformation)
 
         return tf
 
@@ -620,11 +650,14 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
 
         """
 
+        if isinstance(chemicalsystem, str):
+            chemicalsystem = ScopedKey.from_str(chemicalsystem)
+
         def _get_chemicalsystem():
             content = self._get_resource(
                 f"/chemicalsystems/{chemicalsystem}", compress=compress
             )
-            return KeyedChain(content).to_gufe()
+            return content
 
         if visualize:
             from rich.progress import Progress
@@ -634,12 +667,12 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
                     f"Retrieving [bold]'{chemicalsystem}'[/bold]...", total=None
                 )
 
-                cs = _get_chemicalsystem()
+                cs = self._get_keyed_chain_resource(chemicalsystem, _get_chemicalsystem)
 
                 progress.start_task(task)
                 progress.update(task, total=1, completed=1)
         else:
-            cs = _get_chemicalsystem()
+            cs = self._get_keyed_chain_resource(chemicalsystem, _get_chemicalsystem)
 
         return cs
 
@@ -1353,14 +1386,25 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
     async def _async_get_protocoldagresult(
         self, protocoldagresultref, transformation, route, compress
     ):
-        pdr_json = await self._get_resource_async(
-            f"/transformations/{transformation}/{route}/{protocoldagresultref}",
-            compress=compress,
-        )
+        # check the disk cache for the PDR
+        if pdr_json := self._cache.get(str(protocoldagresultref)):
+            pdr_json = pdr_json.decode("utf-8")
+        else:
+            # query the alchemiscale server for the PDR
+            pdr_json = await self._get_resource_async(
+                f"/transformations/{transformation}/{route}/{protocoldagresultref}",
+                compress=compress,
+            )
 
-        pdr = GufeTokenizable.from_dict(
-            json.loads(pdr_json[0], cls=JSON_HANDLER.decoder)
-        )
+            pdr_json = pdr_json[0]
+
+            # add the resulting PDR to the cache
+            self._cache.add(
+                str(protocoldagresultref),
+                pdr_json.encode("utf-8"),
+            )
+
+        pdr = GufeTokenizable.from_dict(json.loads(pdr_json, cls=JSON_HANDLER.decoder))
 
         return pdr
 
