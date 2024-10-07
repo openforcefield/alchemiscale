@@ -1,0 +1,38 @@
+# NOTICE
+
+This project includes software developed by py2neo (https://github.com/neo4j-contrib/py2neo/tree/master).
+
+## Original NOTICE
+
+    py2neo
+    Copyright (c) "Neo4j"
+    Neo4j Sweden AB [https://neo4j.com]
+    
+    This product includes software developed by
+    Neo4j, Inc. <drivers@neo4j.com>.
+    
+    This product includes software developed by
+    Nigel Small <technige@nige.tech>.
+    
+    This product includes software developed by
+    Simon Harrison <noisyboiler@googlemail.com>.
+    
+    This product includes software developed by
+    Marcel Hellkamp <https://bottlepy.org>.
+
+## Modifications
+
+- alchemiscale/storage/cypher.py
+    - Functions modified from the py2neo.cypher.queries module:
+        - _match_clause
+    - Modifications made:
+        - switched all usage of the id function to elementId
+
+- alchemiscale/storage/subgraph.py
+    - Functions modified form the py2neo.data module:
+         - Subgraph.__db_merge__ (moved to merge_subgraph)
+         - Subgraph.__db_create__ (moved to create_subgraph)
+    - Modifications made:
+        - switched all usage of the id function to elementId
+        - removed the usage of py2neo database connections
+          and replaced them with the official neo4j driver

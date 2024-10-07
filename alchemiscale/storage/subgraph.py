@@ -1,7 +1,7 @@
 from py2neo import Node, Subgraph, Relationship, UniquenessError
 
 from py2neo.cypher import cypher_join
-from py2neo.cypher.queries import (
+from alchemiscale.storage.cypher import (
     unwind_create_nodes_query,
     unwind_merge_nodes_query,
     unwind_merge_relationships_query,
@@ -54,6 +54,11 @@ def subgraph_from_path_record(path_record):
     return Subgraph(path_nodes, path_rels)
 
 
+# Original code from py2neo, licensed under the Apache License 2.0.
+# Modifications:
+#     - Removed usage of py2neo database connections to instead use
+#       the official neo4j driver
+#     - Switched all usage of the id function to elementId
 def merge_subgraph(
     transaction: Transaction,
     subgraph: Subgraph,
@@ -90,7 +95,7 @@ def merge_subgraph(
                 "Primary label and primary key are required for MERGE operation"
             )
         pq = unwind_merge_nodes_query(map(dict, nodes), (pl, pk), labels)
-        pq = cypher_join(pq, "RETURN id(_)")
+        pq = cypher_join(pq, "RETURN elementId(_)")
         identities = [record[0] for record in transaction.run(*pq)]
         if len(identities) > len(nodes):
             raise UniquenessError(
@@ -110,13 +115,18 @@ def merge_subgraph(
             relationships,
         )
         pq = unwind_merge_relationships_query(data, r_type)
-        pq = cypher_join(pq, "RETURN id(_)")
+        pq = cypher_join(pq, "RETURN elementId(_)")
 
         for i, record in enumerate(transaction.run(*pq)):
             relationship = relationships[i]
             relationship.identity = record[0]
 
 
+# Original code from py2neo, licensed under the Apache License 2.0.
+# Modifications:
+#     - Removed usage of py2neo database connections to instead use
+#       the official neo4j driver
+#     - Switched all usage of the id function to elementId
 def create_subgraph(transaction, subgraph):
     """Code adapted from the py2neo Subgraph.__db_create__ method."""
     node_dict = {}
@@ -131,7 +141,7 @@ def create_subgraph(transaction, subgraph):
 
     for labels, nodes in node_dict.items():
         pq = unwind_create_nodes_query(list(map(dict, nodes)), labels=labels)
-        pq = cypher_join(pq, "RETURN id(_)")
+        pq = cypher_join(pq, "RETURN elementId(_)")
         records = transaction.run(*pq)
         for i, record in enumerate(records):
             node = nodes[i]
@@ -143,7 +153,7 @@ def create_subgraph(transaction, subgraph):
             relationships,
         )
         pq = unwind_merge_relationships_query(data, r_type)
-        pq = cypher_join(pq, "RETURN id(_)")
+        pq = cypher_join(pq, "RETURN elementId(_)")
         for i, record in enumerate(transaction.run(*pq)):
             relationship = relationships[i]
             relationship.identity = record[0]
