@@ -17,7 +17,7 @@ dependencies:
   - monotonic
   - docker-py    # for grolt
 
-  # user client printing 
+  # user client printing
   - rich
 
   ## object store
@@ -28,7 +28,6 @@ dependencies:
   - uvicorn
   - gunicorn
   - python-jose
-  - passlib
   - bcrypt
   - python-multipart
   - starlette

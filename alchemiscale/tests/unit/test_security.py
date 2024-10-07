@@ -30,3 +30,10 @@ def test_token_data(secret_key):
     token_data = auth.get_token_data(token=token, secret_key=secret_key)
 
     assert token_data.scopes == ["*-*-*"]
+
+
+def test_bcrypt_password_handler():
+    handler = auth.BcryptPasswordHandler()
+    hash_ = handler.hash("test")
+    assert handler.verify("test", hash_)
+    assert not handler.verify("deadbeef", hash_)

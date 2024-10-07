@@ -29,7 +29,6 @@ dependencies:
   - uvicorn
   - gunicorn
   - python-jose
-  - passlib
   - bcrypt
   - python-multipart
   - starlette

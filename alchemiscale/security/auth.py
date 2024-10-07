@@ -4,21 +4,73 @@
 
 """
 
-from datetime import datetime, timedelta
-from typing import Union, Optional
 import secrets
+from datetime import datetime, timedelta
+from typing import Optional, Union
 
+import bcrypt
 from fastapi import HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel
 
-from .models import Token, TokenData, CredentialedEntity
+from .models import CredentialedEntity, Token, TokenData
+
+MAX_PASSWORD_SIZE = 4096
+_dummy_secret = "dummy"
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+class BcryptPasswordHandler(object):
+    rounds: int = 12
+    ident: str = "$2b$"
+    salt: str = ""
+    checksum: str = ""
+
+    def __init__(self, rounds: int = 12, ident: str = "$2b$"):
+        self.rounds = rounds
+        self.ident = ident
+
+    def _get_config(self) -> bytes:
+        config = bcrypt.gensalt(
+            self.rounds, prefix=self.ident.strip("$").encode("ascii")
+        )
+        self.salt = config.decode("ascii")[len(self.ident) + 3 :]
+        return config
+
+    def to_string(self) -> str:
+        return "%s%02d$%s%s" % (self.ident, self.rounds, self.salt, self.checksum)
+
+    def hash(self, key: str) -> str:
+        validate_secret(key)
+        config = self._get_config()
+        hash_ = bcrypt.hashpw(key.encode("utf-8"), config)
+        if not hash_.startswith(config) or len(hash_) != len(config) + 31:
+            raise ValueError("bcrypt.hashpw returned an invalid hash")
+        self.checksum = hash_[-31:].decode("ascii")
+        return self.to_string()
+
+    def verify(self, key: str, hash: str) -> bool:
+        validate_secret(key)
+
+        if hash is None:
+            self.hash(_dummy_secret)
+            return False
+
+        return bcrypt.checkpw(key.encode("utf-8"), hash.encode("utf-8"))
+
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+pwd_context = BcryptPasswordHandler()
+
+
+def validate_secret(secret):
+    """ensure secret has correct type & size"""
+    if not isinstance(secret, (str, bytes)):
+        raise TypeError("secret must be a string or bytes")
+    if len(secret) > MAX_PASSWORD_SIZE:
+        raise ValueError(
+            f"secret is too long, maximum length is {MAX_PASSWORD_SIZE} characters"
+        )
 
 
 def generate_secret_key():
