@@ -103,7 +103,7 @@ class TestProfile:
 
 # TODO: test with full certificates
 neo4j_deployment_profiles = [
-    DeploymentProfile(release=(5, 16), topology="CE", schemes=["bolt"]),
+    DeploymentProfile(release=(5, 19), topology="CE", schemes=["bolt"]),
 ]
 
 if NEO4J_VERSION == "LATEST":
