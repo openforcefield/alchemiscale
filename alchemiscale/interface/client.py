@@ -1740,3 +1740,46 @@ class AlchemiscaleClient(AlchemiscaleBaseClient):
         )
 
         return pdrs
+
+    def add_task_restart_patterns(
+        self,
+        network_scoped_key: ScopedKey,
+        patterns: list[str],
+        num_allowed_restarts: int,
+    ) -> ScopedKey:
+        data = {"patterns": patterns, "number_of_retries": num_allowed_restarts}
+        self._post_resource(f"/networks/{network_scoped_key}/restartpolicy/add", data)
+        return network_scoped_key
+
+    def get_task_restart_patterns(
+        self, network_scoped_key: ScopedKey
+    ) -> dict[str, int]:
+        data = {"networks": [str(network_scoped_key)]}
+        mapped_patterns = self._post_resource(
+            "/bulk/networks/restartpolicy/get", data=data
+        )
+        network_patterns = mapped_patterns[str(network_scoped_key)]
+        patterns_with_retries = {pattern: retry for pattern, retry in network_patterns}
+        return patterns_with_retries
+
+    def set_task_restart_patterns_allowed_restarts(
+        self,
+        network_scoped_key: ScopedKey,
+        patterns: list[str],
+        num_allowed_restarts: int,
+    ):
+        data = {"patterns": patterns, "max_retries": num_allowed_restarts}
+        self._post_resource(
+            f"/networks/{network_scoped_key}/restartpolicy/maxretries", data
+        )
+
+    def remove_task_restart_patterns(
+        self, network_scoped_key: ScopedKey, patterns: list[str]
+    ):
+        data = {"patterns": patterns}
+        self._post_resource(
+            f"/networks/{network_scoped_key}/restartpolicy/remove", data
+        )
+
+    def clear_task_restart_patterns(self, network_scoped_key: ScopedKey):
+        self._query_resource(f"/networks/{network_scoped_key}/restartpolicy/clear")

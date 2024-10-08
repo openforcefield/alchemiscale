@@ -13,6 +13,7 @@ import random
 from fastapi import FastAPI, APIRouter, Body, Depends
 from fastapi.middleware.gzip import GZipMiddleware
 from gufe.tokenization import GufeTokenizable, JSON_HANDLER
+from gufe.protocols import ProtocolDAGResult
 
 from ..base.api import (
     QueryGUFEHandler,
@@ -329,7 +330,7 @@ def set_task_result(
     validate_scopes(task_sk.scope, token)
 
     pdr = json.loads(protocoldagresult, cls=JSON_HANDLER.decoder)
-    pdr = GufeTokenizable.from_dict(pdr)
+    pdr: ProtocolDAGResult = GufeTokenizable.from_dict(pdr)
 
     tf_sk, _ = n4js.get_task_transformation(
         task=task_scoped_key,
@@ -351,7 +352,11 @@ def set_task_result(
     if protocoldagresultref.ok:
         n4js.set_task_complete(tasks=[task_sk])
     else:
+        n4js.add_protocol_dag_result_ref_tracebacks(
+            pdr.protocol_unit_failures, result_sk
+        )
         n4js.set_task_error(tasks=[task_sk])
+        n4js.resolve_task_restarts(tasks=[task_sk])
 
     return result_sk
 

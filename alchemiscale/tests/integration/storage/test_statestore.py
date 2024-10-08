@@ -2,12 +2,15 @@ from datetime import datetime, timedelta
 import random
 from typing import List, Dict
 from pathlib import Path
-from itertools import chain
 from functools import reduce
+from itertools import chain
+import operator
+from collections import defaultdict
 
 import pytest
 from gufe import AlchemicalNetwork
 from gufe.tokenization import TOKENIZABLE_REGISTRY
+from gufe.protocols import ProtocolUnitFailure
 from gufe.protocols.protocoldag import execute_DAG
 
 from alchemiscale.storage.statestore import Neo4jStore
@@ -28,6 +31,13 @@ from alchemiscale.security.models import (
 )
 from alchemiscale.security.auth import hash_key
 
+from alchemiscale.tests.integration.storage.utils import (
+    complete_tasks,
+    fail_task,
+    tasks_are_errored,
+    tasks_are_not_actioned_on_taskhub,
+    tasks_are_waiting,
+)
 from ..conftest import DummyProtocolA, DummyProtocolB, DummyProtocolC
 
 
@@ -1098,6 +1108,65 @@ class TestNeo4jStore(TestStateStore):
         task_sks_fail = n4js.action_tasks(task_sks, taskhub_sk2)
         assert all([i is None for i in task_sks_fail])
 
+        # test for APPLIES relationship between an ACTIONED task and a TaskRestartPattern
+
+        ## create a restart pattern, should already create APPLIES relationships with those
+        ## already actioned
+        n4js.add_task_restart_patterns(taskhub_sk, ["test_pattern"], 5)
+
+        query = """
+        MATCH (:TaskRestartPattern)-[applies:APPLIES]->(Task)<-[:ACTIONS]-(:TaskHub {`_scoped_key`: $taskhub_scoped_key})
+        // change this so that later tests can show the value was not overwritten
+        SET applies.num_retries = 1
+        RETURN count(applies) AS applies_count
+        """
+
+        ## sanity check that this number makes sense
+        applies_count = n4js.execute_query(
+            query, taskhub_scoped_key=str(taskhub_sk)
+        ).records[0]["applies_count"]
+
+        assert applies_count == 10
+
+        # create 10 more tasks and action them
+        task_sks = n4js.create_tasks([transformation_sk] * 10)
+        n4js.action_tasks(task_sks, taskhub_sk)
+
+        assert len(n4js.get_taskhub_actioned_tasks([taskhub_sk])[0]) == 20
+
+        # same as above query without the set num_retries = 1
+        query = """
+        MATCH (:TaskRestartPattern)-[applies:APPLIES]->(:Task)<-[:ACTIONS]-(:TaskHub {`_scoped_key`: $taskhub_scoped_key})
+        RETURN count(applies) AS applies_count
+        """
+
+        applies_count = n4js.execute_query(
+            query, taskhub_scoped_key=str(taskhub_sk)
+        ).records[0]["applies_count"]
+
+        query = """
+        MATCH (:TaskRestartPattern)-[applies:APPLIES]->(:Task)
+        RETURN applies
+        """
+
+        results = n4js.execute_query(query)
+
+        count_0, count_1 = 0, 0
+        for count in map(
+            lambda record: record["applies"]["num_retries"], results.records
+        ):
+            match count:
+                case 0:
+                    count_0 += 1
+                case 1:
+                    count_1 += 1
+                case _:
+                    raise AssertionError(
+                        "Unexpected count value found in num_retries field"
+                    )
+
+        assert count_0 == count_1 == 10
+
     def test_action_task_other_statuses(
         self, n4js: Neo4jStore, network_tyk2, scope_test
     ):
@@ -1213,6 +1282,14 @@ class TestNeo4jStore(TestStateStore):
         # cancel the second and third task we created
         canceled = n4js.cancel_tasks(task_sks[1:3], taskhub_sk)
 
+        # cancel a fake task
+        fake_canceled = n4js.cancel_tasks(
+            [ScopedKey.from_str("Task-FAKE-test_org-test_campaign-test_project")],
+            taskhub_sk,
+        )
+
+        assert fake_canceled[0] is None
+
         # check that the hub has the contents we expect
         q = """
         MATCH (:TaskHub {_scoped_key: $taskhub_scoped_key})-[:ACTIONS]->(task:Task)
@@ -1227,9 +1304,30 @@ class TestNeo4jStore(TestStateStore):
         assert len(tasks) == 8
         assert set(tasks) == set(actioned) - set(canceled)
 
-        # cancel the remaining tasks and check for Nones
-        canceled = n4js.cancel_tasks(task_sks, taskhub_sk)
-        assert canceled == [task_sks[0]] + [None, None] + task_sks[3:]
+        # create a TaskRestartPattern
+        n4js.add_task_restart_patterns(taskhub_sk, ["Test pattern"], 1)
+
+        query = """
+        MATCH (:TaskHub {`_scoped_key`: $taskhub_scoped_key})<-[:ENFORCES]-(:TaskRestartPattern)-[applies:APPLIES]->(:Task)
+        RETURN count(applies) AS applies_count
+        """
+
+        assert (
+            n4js.execute_query(query, taskhub_scoped_key=str(taskhub_sk)).records[0][
+                "applies_count"
+            ]
+            == 8
+        )
+
+        # cancel the fourth and fifth task we created
+        canceled = n4js.cancel_tasks(task_sks[3:5], taskhub_sk)
+
+        assert (
+            n4js.execute_query(query, taskhub_scoped_key=str(taskhub_sk)).records[0][
+                "applies_count"
+            ]
+            == 6
+        )
 
     def test_get_taskhub_tasks(self, n4js, network_tyk2, scope_test):
         an = network_tyk2
@@ -1904,6 +2002,540 @@ class TestNeo4jStore(TestStateStore):
         assert len(failure_pdr_ref_sks) == 2
         assert pdr_ref_sk in failure_pdr_ref_sks
         assert pdr_ref2_sk in failure_pdr_ref_sks
+
+    @pytest.mark.parametrize("failure_count", (1, 2, 3, 4))
+    def test_add_protocol_dag_result_ref_traceback(
+        self,
+        network_tyk2_failure,
+        n4js,
+        scope_test,
+        transformation_failure,
+        protocoldagresults_failure,
+        failure_count: int,
+    ):
+
+        an = network_tyk2_failure.copy_with_replacements(
+            name=network_tyk2_failure.name
+            + "_test_add_protocol_dag_result_ref_traceback"
+        )
+        n4js.assemble_network(an, scope_test)
+        transformation_scoped_key = n4js.get_scoped_key(
+            transformation_failure, scope_test
+        )
+
+        # create a task; pretend we computed it, submit reference for pre-baked
+        # result
+        task_scoped_key = n4js.create_task(transformation_scoped_key)
+
+        protocol_unit_failure = protocoldagresults_failure[0].protocol_unit_failures[0]
+
+        pdrr = ProtocolDAGResultRef(
+            scope=task_scoped_key.scope,
+            obj_key=protocoldagresults_failure[0].key,
+            ok=protocoldagresults_failure[0].ok(),
+        )
+
+        # push the result
+        pdrr_scoped_key = n4js.set_task_result(task_scoped_key, pdrr)
+
+        # simulating many failures
+        protocol_unit_failures = []
+        for failure_index in range(failure_count):
+            protocol_unit_failures.append(
+                protocol_unit_failure.copy_with_replacements(
+                    traceback=protocol_unit_failure.traceback + "_" + str(failure_index)
+                )
+            )
+
+        n4js.add_protocol_dag_result_ref_tracebacks(
+            protocol_unit_failures, pdrr_scoped_key
+        )
+
+        query = """
+        MATCH (traceback:Tracebacks)-[:DETAILS]->(:ProtocolDAGResultRef {`_scoped_key`: $pdrr_scoped_key})
+        RETURN traceback
+        """
+
+        results = n4js.execute_query(query, pdrr_scoped_key=str(pdrr_scoped_key))
+
+        returned_tracebacks = results.records[0]["traceback"]["tracebacks"]
+
+        assert returned_tracebacks == [puf.traceback for puf in protocol_unit_failures]
+
+    ### task restart policies
+
+    class TestTaskRestartPolicy:
+
+        @pytest.mark.parametrize("status", ("complete", "invalid", "deleted"))
+        def test_task_status_change(self, n4js, network_tyk2, scope_test, status):
+            an = network_tyk2.copy_with_replacements(
+                name=network_tyk2.name + "_test_task_status_change"
+            )
+            _, taskhub_scoped_key, _ = n4js.assemble_network(an, scope_test)
+            transformation = list(an.edges)[0]
+            transformation_scoped_key = n4js.get_scoped_key(transformation, scope_test)
+            task_scoped_keys = n4js.create_tasks([transformation_scoped_key])
+            n4js.action_tasks(task_scoped_keys, taskhub_scoped_key)
+
+            n4js.add_task_restart_patterns(taskhub_scoped_key, ["Test pattern"], 10)
+
+            query = """
+            MATCH (:TaskRestartPattern)-[:APPLIES]->(task:Task {`_scoped_key`: $task_scoped_key})<-[:ACTIONS]-(:TaskHub {`_scoped_key`: $taskhub_scoped_key})
+            RETURN task
+            """
+
+            results = n4js.execute_query(
+                query,
+                task_scoped_key=str(task_scoped_keys[0]),
+                taskhub_scoped_key=str(taskhub_scoped_key),
+            )
+
+            assert len(results.records) == 1
+
+            target_method = {
+                "complete": n4js.set_task_complete,
+                "invalid": n4js.set_task_invalid,
+                "deleted": n4js.set_task_deleted,
+            }
+
+            if status == "complete":
+                n4js.set_task_running(task_scoped_keys)
+
+            assert target_method[status](task_scoped_keys)[0] is not None
+
+            query = """
+            MATCH (:TaskRestartPattern)-[:APPLIES]->(task:Task)
+            RETURN task
+            """
+
+            results = n4js.execute_query(
+                query,
+                task_scoped_key=str(task_scoped_keys[0]),
+                taskhub_scoped_key=str(taskhub_scoped_key),
+            )
+
+            assert len(results.records) == 0
+
+        def test_add_task_restart_patterns(self, n4js, network_tyk2, scope_test):
+            # create three new alchemical networks (and taskhubs)
+            taskhub_sks = []
+            for network_index in range(3):
+                an = network_tyk2.copy_with_replacements(
+                    name=network_tyk2.name
+                    + f"_test_add_task_restart_patterns_{network_index}"
+                )
+                _, taskhub_scoped_key, _ = n4js.assemble_network(an, scope_test)
+
+                # don't action tasks on every network, take every other
+                if network_index % 2 == 0:
+                    transformation = list(an.edges)[0]
+                    transformation_sk = n4js.get_scoped_key(transformation, scope_test)
+                    task_sks = n4js.create_tasks([transformation_sk] * 3)
+                    n4js.action_tasks(task_sks, taskhub_scoped_key)
+
+                taskhub_sks.append(taskhub_scoped_key)
+            # test a shared pattern with and without shared number of restarts
+            # this will create 6 unique patterns
+            for network_index in range(3):
+                taskhub_scoped_key = taskhub_sks[network_index]
+                n4js.add_task_restart_patterns(
+                    taskhub_scoped_key, ["shared_pattern_and_restarts.+"], 5
+                )
+                n4js.add_task_restart_patterns(
+                    taskhub_scoped_key,
+                    ["shared_pattern_and_different_restarts.+"],
+                    network_index + 1,
+                )
+
+            q = """UNWIND $taskhub_sks AS taskhub_sk
+            MATCH (trp: TaskRestartPattern)-[:ENFORCES]->(th: TaskHub {`_scoped_key`: taskhub_sk}) RETURN trp, th
+            """
+
+            taskhub_sks = list(map(str, taskhub_sks))
+            records = n4js.execute_query(q, taskhub_sks=taskhub_sks).records
+
+            assert len(records) == 6
+
+            taskhub_scoped_key_set = set()
+            taskrestartpattern_scoped_key_set = set()
+
+            for record in records:
+                taskhub_scoped_key = ScopedKey.from_str(record["th"]["_scoped_key"])
+                taskrestartpattern_scoped_key = ScopedKey.from_str(
+                    record["trp"]["_scoped_key"]
+                )
+
+                taskhub_scoped_key_set.add(taskhub_scoped_key)
+                taskrestartpattern_scoped_key_set.add(taskrestartpattern_scoped_key)
+
+            assert len(taskhub_scoped_key_set) == 3
+            assert len(taskrestartpattern_scoped_key_set) == 6
+
+            # check that the applies relationships were correctly added
+
+            ## first check that the number of applies relationships is correct and
+            ## that the number of retries is zero
+            applies_query = """
+            MATCH (trp: TaskRestartPattern)-[app:APPLIES {num_retries: 0}]->(task: Task)<-[:ACTIONS]-(th: TaskHub)
+            RETURN th, count(app) AS num_applied
+            """
+
+            records = n4js.execute_query(applies_query).records
+
+            ### one record per taskhub, each with six num_applied
+            assert len(records) == 2
+            assert records[0]["num_applied"] == records[1]["num_applied"] == 6
+
+            applies_nonzero_retries = """
+            MATCH (trp: TaskRestartPattern)-[app:APPLIES]->(task: Task)<-[:ACTIONS]-(th: TaskHub)
+            WHERE app.num_retries <> 0
+            RETURN th, count(app) AS num_applied
+            """
+            assert len(n4js.execute_query(applies_nonzero_retries).records) == 0
+
+        def test_remove_task_restart_patterns(self, n4js, network_tyk2, scope_test):
+
+            # collect what we expect `get_task_restart_patterns` to return
+            expected_results = defaultdict(set)
+
+            # create three new alchemical networks (and taskhubs)
+            taskhub_sks = []
+            for network_index in range(3):
+                an = network_tyk2.copy_with_replacements(
+                    name=network_tyk2.name
+                    + f"_test_remove_task_restart_patterns_{network_index}"
+                )
+                _, taskhub_scoped_key, _ = n4js.assemble_network(an, scope_test)
+                taskhub_sks.append(taskhub_scoped_key)
+
+            # test a shared pattern with and without shared number of restarts
+            # this will create 6 unique patterns
+            for network_index in range(3):
+                taskhub_scoped_key = taskhub_sks[network_index]
+                n4js.add_task_restart_patterns(
+                    taskhub_scoped_key, ["shared_pattern_and_restarts.+"], 5
+                )
+                expected_results[taskhub_scoped_key].add(
+                    ("shared_pattern_and_restarts.+", 5)
+                )
+
+                n4js.add_task_restart_patterns(
+                    taskhub_scoped_key,
+                    ["shared_pattern_and_different_restarts.+"],
+                    network_index + 1,
+                )
+                expected_results[taskhub_scoped_key].add(
+                    ("shared_pattern_and_different_restarts.+", network_index + 1)
+                )
+
+            # remove both patterns enforcing the first taskhub at the same time, two patterns
+            target_taskhub = taskhub_sks[0]
+            target_patterns = []
+
+            for pattern, _ in expected_results[target_taskhub]:
+                target_patterns.append(pattern)
+
+            expected_results[target_taskhub].clear()
+
+            n4js.remove_task_restart_patterns(target_taskhub, target_patterns)
+            assert expected_results == n4js.get_task_restart_patterns(taskhub_sks)
+
+            # remove both patterns enforcing the second taskhub one at a time, two patterns
+            target_taskhub = taskhub_sks[1]
+            # pointer to underlying set, pops will update comparison data structure
+            target_patterns = expected_results[target_taskhub]
+
+            pattern, _ = target_patterns.pop()
+            n4js.remove_task_restart_patterns(target_taskhub, [pattern])
+            assert expected_results == n4js.get_task_restart_patterns(taskhub_sks)
+
+            pattern, _ = target_patterns.pop()
+            n4js.remove_task_restart_patterns(target_taskhub, [pattern])
+            assert expected_results == n4js.get_task_restart_patterns(taskhub_sks)
+
+        def test_set_task_restart_patterns_max_retries(
+            self, n4js, network_tyk2, scope_test
+        ):
+            network_name = (
+                network_tyk2.name + "_test_set_task_restart_patterns_max_retries"
+            )
+            an = network_tyk2.copy_with_replacements(name=network_name)
+            _, taskhub_scoped_key, _ = n4js.assemble_network(an, scope_test)
+
+            pattern_data = [("pattern_1", 5), ("pattern_2", 5), ("pattern_3", 5)]
+
+            n4js.add_task_restart_patterns(
+                taskhub_scoped_key,
+                patterns=[data[0] for data in pattern_data],
+                number_of_retries=5,
+            )
+
+            expected_results = {taskhub_scoped_key: set(pattern_data)}
+
+            assert expected_results == n4js.get_task_restart_patterns(
+                [taskhub_scoped_key]
+            )
+
+            # reflect changing just one max_retry
+            new_pattern_1_tuple = ("pattern_1", 1)
+
+            expected_results[taskhub_scoped_key].remove(pattern_data[0])
+            expected_results[taskhub_scoped_key].add(new_pattern_1_tuple)
+
+            n4js.set_task_restart_patterns_max_retries(
+                taskhub_scoped_key, new_pattern_1_tuple[0], new_pattern_1_tuple[1]
+            )
+
+            assert expected_results == n4js.get_task_restart_patterns(
+                [taskhub_scoped_key]
+            )
+
+            # reflect changing more than one at a time
+            new_pattern_2_tuple = ("pattern_2", 2)
+            new_pattern_3_tuple = ("pattern_3", 2)
+
+            expected_results[taskhub_scoped_key].remove(pattern_data[1])
+            expected_results[taskhub_scoped_key].add(new_pattern_2_tuple)
+
+            expected_results[taskhub_scoped_key].remove(pattern_data[2])
+            expected_results[taskhub_scoped_key].add(new_pattern_3_tuple)
+
+            n4js.set_task_restart_patterns_max_retries(
+                taskhub_scoped_key, [new_pattern_2_tuple[0], new_pattern_3_tuple[0]], 2
+            )
+
+            assert expected_results == n4js.get_task_restart_patterns(
+                [taskhub_scoped_key]
+            )
+
+        def test_get_task_restart_patterns(self, n4js, network_tyk2, scope_test):
+            # create three new alchemical networks (and taskhubs)
+            taskhub_sks = []
+            for network_index in range(3):
+                an = network_tyk2.copy_with_replacements(
+                    name=network_tyk2.name
+                    + f"_test_add_task_restart_patterns_{network_index}"
+                )
+                _, taskhub_scoped_key, _ = n4js.assemble_network(an, scope_test)
+                taskhub_sks.append(taskhub_scoped_key)
+
+            expected_results = defaultdict(set)
+            # test a shared pattern with and without shared number of restarts
+            # this will create 6 unique patterns
+            for network_index in range(3):
+                taskhub_scoped_key = taskhub_sks[network_index]
+                n4js.add_task_restart_patterns(
+                    taskhub_scoped_key, ["shared_pattern_and_restarts.+"], 5
+                )
+                expected_results[taskhub_scoped_key].add(
+                    ("shared_pattern_and_restarts.+", 5)
+                )
+                n4js.add_task_restart_patterns(
+                    taskhub_scoped_key,
+                    ["shared_pattern_and_different_restarts.+"],
+                    network_index + 1,
+                )
+                expected_results[taskhub_scoped_key].add(
+                    ("shared_pattern_and_different_restarts.+", network_index + 1)
+                )
+
+            taskhub_grouped_patterns = n4js.get_task_restart_patterns(taskhub_sks)
+
+            assert taskhub_grouped_patterns == expected_results
+
+        def test_resolve_task_restarts(
+            self,
+            scope_test: Scope,
+            n4js_task_restart_policy: Neo4jStore,
+        ):
+            n4js = n4js_task_restart_policy
+
+            # get the actioned tasks for each taskhub
+            taskhub_actioned_tasks = {}
+            for taskhub_scoped_key in n4js.query_taskhubs():
+                taskhub_actioned_tasks[taskhub_scoped_key] = set(
+                    n4js.get_taskhub_actioned_tasks([taskhub_scoped_key])[0]
+                )
+
+            restart_patterns = n4js.get_task_restart_patterns(
+                list(taskhub_actioned_tasks.keys())
+            )
+
+            # create a map of the transformations and all of the tasks that perform them
+            transformation_tasks: dict[ScopedKey, list[ScopedKey]] = defaultdict(list)
+            for task in n4js.query_tasks(status=TaskStatusEnum.waiting.value):
+                transformation_scoped_key, _ = n4js.get_task_transformation(
+                    task, return_gufe=False
+                )
+                transformation_tasks[transformation_scoped_key].append(task)
+
+            # get a list of all tasks for more convient calls of the resolve method
+            all_tasks = []
+            for task_group in transformation_tasks.values():
+                all_tasks.extend(task_group)
+
+            taskhub_scoped_key_no_policy = None
+            taskhub_scoped_key_with_policy = None
+
+            # bind taskhub scoped keys to variables for convenience later
+            for taskhub_scoped_key, patterns in restart_patterns.items():
+                if not patterns:
+                    taskhub_scoped_key_no_policy = taskhub_scoped_key
+                    continue
+                else:
+                    taskhub_scoped_key_with_policy = taskhub_scoped_key
+                    continue
+
+                if patterns and taskhub_scoped_key_with_policy:
+                    raise AssertionError("More than one TaskHub has restart patterns")
+
+            assert (
+                taskhub_scoped_key_no_policy
+                and taskhub_scoped_key_with_policy
+                and (taskhub_scoped_key_no_policy != taskhub_scoped_key_with_policy)
+            )
+
+            # we first check the behavior involving tasks that are actioned by both taskhubs
+            # this involves confirming:
+            #
+            # 1. Completed Tasks do not have an actions relationship with either TaskHub
+            # 2. A Task entering the error state is switched back to waiting if any restart patterns apply
+            # 3. A Task entering the error state is left in the error state if no patterns apply and only the TaskHub without
+            #    an enforcing task restart policy actions the Task
+            #
+            # Tasks will be set to the error state with a spoofing method, which will create a fake ProtocolDAGResultRef
+            # and Tracebacks. This is done since making a protocol fail systematically in the testing environment is not
+            # obvious at this time.
+
+            # reduce down all tasks until only the common elements between taskhubs exist
+            tasks_actioned_by_all_taskhubs: List[ScopedKey] = list(
+                reduce(operator.and_, taskhub_actioned_tasks.values())
+            )
+
+            assert len(tasks_actioned_by_all_taskhubs) == 4
+
+            # we're going to just pass the first 2 and fail the second 2
+            tasks_to_complete = tasks_actioned_by_all_taskhubs[:2]
+            tasks_to_fail = tasks_actioned_by_all_taskhubs[2:]
+
+            complete_tasks(n4js, tasks_to_complete)
+
+            records = n4js.execute_query(
+                """
+                UNWIND $task_scoped_keys as task_scoped_key
+                MATCH (task:Task {_scoped_key: task_scoped_key})-[:RESULTS_IN]->(:ProtocolDAGResultRef)
+                RETURN count(task) as task_count
+            """,
+                task_scoped_keys=list(map(str, tasks_to_complete)),
+            ).records
+
+            assert records[0]["task_count"] == 2
+
+            # test the behavior of the compute API
+            for i, task in enumerate(tasks_to_fail):
+                error_messages = [
+                    f"Error message {repeat}, round {i}" for repeat in range(3)
+                ]
+
+                fail_task(
+                    n4js,
+                    task,
+                    resolve=False,
+                    error_messages=error_messages,
+                )
+
+                n4js.resolve_task_restarts(all_tasks)
+
+            # both tasks should have the waiting status and the APPLIES
+            # relationship num_retries should have incremented by 1
+            query = """
+            UNWIND $task_scoped_keys as task_scoped_key
+            MATCH (task:Task {`_scoped_key`: task_scoped_key, status: $waiting})<-[:APPLIES {num_retries: 1}]-(:TaskRestartPattern {max_retries: 2})
+            RETURN count(DISTINCT task) as renewed_waiting_tasks
+            """
+
+            renewed_waiting = n4js.execute_query(
+                query,
+                task_scoped_keys=list(map(str, tasks_to_fail)),
+                waiting=TaskStatusEnum.waiting.value,
+            ).records[0]["renewed_waiting_tasks"]
+
+            assert renewed_waiting == 2
+
+            # we want the resolve restarts to cancel a task.
+            # deconstruct the tasks to fail, where the first
+            # one will be cancelled and the second will continue to wait
+            task_to_cancel, task_to_wait = tasks_to_fail
+
+            # error out the first task
+            for _ in range(2):
+                error_messages = [
+                    f"Error message {repeat}, round {i}" for repeat in range(3)
+                ]
+
+                fail_task(
+                    n4js,
+                    task_to_cancel,
+                    resolve=False,
+                    error_messages=error_messages,
+                )
+
+                n4js.resolve_task_restarts(tasks_to_fail)
+
+            # check that it is no longer actioned on the enforced taskhub
+            assert tasks_are_not_actioned_on_taskhub(
+                n4js,
+                [task_to_cancel],
+                taskhub_scoped_key_with_policy,
+            )
+
+            # check that it is still actioned on the unenforced taskhub
+            assert not tasks_are_not_actioned_on_taskhub(
+                n4js,
+                [task_to_cancel],
+                taskhub_scoped_key_no_policy,
+            )
+
+            # it should still be errored though!
+            assert tasks_are_errored(n4js, [task_to_cancel])
+
+            # fail the second task one time
+            error_messages = [
+                f"Error message {repeat}, round {i}" for repeat in range(3)
+            ]
+
+            fail_task(
+                n4js,
+                task_to_wait,
+                resolve=False,
+                error_messages=error_messages,
+            )
+
+            n4js.resolve_task_restarts(tasks_to_fail)
+
+            # check that the waiting task is actioned on both taskhubs
+            assert not tasks_are_not_actioned_on_taskhub(
+                n4js,
+                [task_to_wait],
+                taskhub_scoped_key_with_policy,
+            )
+
+            assert not tasks_are_not_actioned_on_taskhub(
+                n4js,
+                [task_to_wait],
+                taskhub_scoped_key_no_policy,
+            )
+
+            # it should be waiting
+            assert tasks_are_waiting(n4js, [task_to_wait])
+
+        @pytest.mark.xfail(raises=NotImplementedError)
+        def test_task_actioning_applies_relationship(self):
+            raise NotImplementedError
+
+        @pytest.mark.xfail(raises=NotImplementedError)
+        def test_task_deaction_applies_relationship(self):
+            raise NotImplementedError
 
     ### authentication
 
